@@ -1,0 +1,13 @@
+{
+  "name": "fonoster-voice-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/index.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@fonoster/voice": "0.18.2"
+  }
+}

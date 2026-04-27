@@ -1,0 +1,406 @@
+services:
+  dashboard:
+    image: fonoster/dashboard-local:0.17.1
+    build:
+      context: /root/fonoster-pack/fonoster/mods/dashboard
+      dockerfile: Dockerfile
+      args:
+        DASHBOARD_VERSION: 0.17.1
+        DASHBOARD_EDITION: ${DASHBOARD_EDITION:-community}
+        DASHBOARD_API_URL: ${DASHBOARD_API_URL:-http://75.119.131.165:8449}
+        DASHBOARD_SERVER_API_URL: ${DASHBOARD_SERVER_API_URL:-envoy:8449}
+        DASHBOARD_ALLOW_INSECURE: ${DASHBOARD_ALLOW_INSECURE:-true}
+        DASHBOARD_AUTH_GITHUB_ENABLED: ${DASHBOARD_AUTH_GITHUB_ENABLED:-false}
+        DASHBOARD_AUTH_GITHUB_CLIENT_ID: ${DASHBOARD_AUTH_GITHUB_CLIENT_ID:-}
+        DASHBOARD_AUTH_GITHUB_URL: ${DASHBOARD_AUTH_GITHUB_URL:-}
+        DASHBOARD_AUTH_GITHUB_CALLBACK_URL: ${DASHBOARD_AUTH_GITHUB_CALLBACK_URL:-}
+        DASHBOARD_RESET_PASSWORD_URL: ${DASHBOARD_RESET_PASSWORD_URL:-http://75.119.131.165:8449/auth/reset-password}
+    restart: unless-stopped
+    expose:
+      - 3030:3030
+    environment:
+      - NODE_ENV=production
+      - SERVER_DASHBOARD_SESSION_SECRET
+
+  test-voiceapp:
+    image: fonoster/test-voiceapp-local:1.0.0
+    build:
+      context: /root/fonoster-pack/fonoster-docker/test-voiceapp
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - 50061
+      - 8081
+    ports:
+      - ${VOICE_AGENT_API_PORT:-8081}:8081
+    environment:
+      - VOICE_AGENT_GRPC_PORT
+      - VOICE_AGENT_API_PORT
+      - VOICE_AGENT_API_TOKEN
+      - VOICE_AGENT_API_CORS_ORIGIN
+      - VOICE_AGENT_API_HEARTBEAT_MS
+      - VOICE_AGENT_API_EVENT_BUFFER_LIMIT
+      - VOICE_AGENT_API_TRANSCRIPT_LIMIT
+      - VOICE_AGENT_SESSION_TTL_MS
+      - VOICE_AGENT_SESSION_HISTORY
+      - VOICE_AGENT_APP_ENABLED
+      - VOICE_AGENT_APP_NAME
+      - VOICE_AGENT_APP_REF
+      - VOICE_AGENT_APP_ENDPOINT
+      - VOICE_AGENT_APP_TYPE
+      - VOICE_AGENT_APP_STT_PRODUCT_REF
+      - VOICE_AGENT_APP_STT_MODEL
+      - VOICE_AGENT_APP_STT_LANGUAGE_CODE
+      - VOICE_AGENT_APP_TTS_PRODUCT_REF
+      - VOICE_AGENT_APP_TTS_VOICE
+      - VOICE_AGENT_MAX_TURNS
+      - VOICE_AGENT_MAX_HISTORY_MESSAGES
+      - VOICE_AGENT_MAX_NO_INPUT_RETRIES
+      - VOICE_AGENT_GATHER_TIMEOUT_MS
+      - VOICE_AGENT_GATHER_MAX_DIGITS
+      - VOICE_AGENT_GATHER_SOURCE
+      - VOICE_AGENT_GREETING_MESSAGE
+      - VOICE_AGENT_FALLBACK_MESSAGE
+      - VOICE_AGENT_NO_INPUT_MESSAGE
+      - VOICE_AGENT_GOODBYE_MESSAGE
+      - VOICE_AGENT_SYSTEM_PROMPT
+      - VOICE_AGENT_TRANSFER_MESSAGE
+      - VOICE_AGENT_LLM_PROVIDER
+      - VOICE_AGENT_LLM_BASE_URL
+      - VOICE_AGENT_LLM_API_KEY
+      - VOICE_AGENT_LLM_MODEL
+      - VOICE_AGENT_LLM_TIMEOUT_MS
+      - VOICE_AGENT_LLM_MAX_TOKENS
+      - VOICE_AGENT_LLM_TEMPERATURE
+      - VOICE_AGENT_LLM_TOP_P
+      - VOICE_AGENT_LLM_RETRY_COUNT
+      - VOICE_AGENT_LLM_RETRY_DELAY_MS
+      - VOICE_AGENT_LLM_DEPLOYMENT
+      - VOICE_AGENT_LLM_API_VERSION
+      - VOICE_AGENT_LLM_HEADERS
+      - VOICE_AGENT_LLM_CUSTOM_BODY
+      - VOICE_AGENT_HTTP_REFERER
+      - VOICE_AGENT_OPENROUTER_REFERER
+      - VOICE_AGENT_OPENROUTER_TITLE
+      - VOICE_AGENT_OPENROUTER_HEADERS
+      - VOICE_AGENT_LLM_STREAMING
+      - VOICE_AGENT_VOICE_MODE
+      - VOICE_AGENT_REALTIME_PROVIDER
+      - VOICE_AGENT_REALTIME_API_KEY
+      - VOICE_AGENT_REALTIME_BASE_URL
+      - VOICE_AGENT_REALTIME_MODEL
+      - VOICE_AGENT_REALTIME_VOICE
+      - VOICE_AGENT_REALTIME_LANGUAGE
+      - VOICE_AGENT_REALTIME_INPUT_RATE
+      - VOICE_AGENT_REALTIME_OUTPUT_RATE
+      - VOICE_AGENT_REALTIME_CALL_RATE
+      - VOICE_AGENT_REALTIME_MAX_DURATION_MS
+      - VOICE_AGENT_REALTIME_GREETING_MODE
+      - VOICE_AGENT_REALTIME_TURN_DETECTION
+      - VOICE_AGENT_REALTIME_INTERRUPTS
+      - VOICE_AGENT_REALTIME_LOG_PROVIDER_EVENTS
+      - VOICE_AGENT_TRANSFER_AGENT_AOR
+      - VOICE_AGENT_LOG_EVENTS
+      - VOICE_AGENT_STOP_ON_FALLBACK
+      - VOICE_AGENT_FALLBACK_MODE
+
+  voice-runtime:
+    image: fonoster/voice-runtime-local:1.0.0
+    build:
+      context: /root/fonoster-pack/fonoster-docker/voice-runtime
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - telephony-bridge
+    expose:
+      - 50062
+    environment:
+      - VOICE_RUNTIME_PORT
+      - VOICE_RUNTIME_LOG_LEVEL
+      - VOICE_RUNTIME_BRIDGE_BASE_URL
+      - VOICE_RUNTIME_BRIDGE_SHARED_SECRET
+      - VOICE_RUNTIME_BRIDGE_TIMEOUT_MS
+      - VOICE_RUNTIME_BRIDGE_MAX_RETRIES
+      - VOICE_RUNTIME_BRIDGE_BACKOFF_MS
+      - VOICE_RUNTIME_SKIP_IDENTITY
+      - VOICE_RUNTIME_DEFAULT_FAILURE_MESSAGE
+      - VOICE_RUNTIME_UNSUPPORTED_ACTION_MESSAGE
+      - VOICE_RUNTIME_TRANSFER_MESSAGE
+
+  telephony-bridge:
+    image: fonoster/telephony-bridge-local:1.0.0
+    build:
+      context: /root/fonoster-pack/fonoster-docker/telephony-bridge
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - apiserver
+      - envoy
+    expose:
+      - 3100
+    ports:
+      - 127.0.0.1:38081:3100
+    environment:
+      - TELEPHONY_BRIDGE_PORT
+      - TELEPHONY_BRIDGE_LOG_LEVEL
+      - TELEPHONY_BRIDGE_SHARED_SECRET
+      - TELEPHONY_BRIDGE_FONOSTER_ACCESS_KEY_ID
+      - TELEPHONY_BRIDGE_FONOSTER_ENDPOINT
+      - TELEPHONY_BRIDGE_FONOSTER_USERNAME
+      - TELEPHONY_BRIDGE_FONOSTER_PASSWORD
+      - TELEPHONY_BRIDGE_FONOSTER_ALLOW_INSECURE
+      - TELEPHONY_BRIDGE_ROUTR_DATABASE_URL
+      - TELEPHONY_BRIDGE_ONELINK_BASE_URL
+      - TELEPHONY_BRIDGE_ONELINK_ACCESS_TOKEN
+      - TELEPHONY_BRIDGE_ONELINK_ACCOUNT_ID
+      - TELEPHONY_BRIDGE_ONELINK_ROUTE_PATH
+      - TELEPHONY_BRIDGE_ONELINK_EVENT_PATH
+      - TELEPHONY_BRIDGE_ONELINK_TIMEOUT_MS
+      - TELEPHONY_BRIDGE_ONELINK_MAX_RETRIES
+      - TELEPHONY_BRIDGE_ONELINK_BACKOFF_MS
+      - TELEPHONY_BRIDGE_ONELINK_CIRCUIT_RESET_MS
+      - TELEPHONY_BRIDGE_ONELINK_CACHE_TTL_MS
+      - TELEPHONY_BRIDGE_CHATWOOT_BASE_URL
+      - TELEPHONY_BRIDGE_CHATWOOT_ACCESS_TOKEN
+      - TELEPHONY_BRIDGE_CHATWOOT_ACCOUNT_ID
+      - TELEPHONY_BRIDGE_REQUIRE_INTERNAL_SECRET
+      - TELEPHONY_BRIDGE_TRUST_PROXY
+      - TELEPHONY_BRIDGE_LOG_HTTP_REQUESTS
+      - TELEPHONY_BRIDGE_STREAM_MAX_HISTORY
+      - TELEPHONY_BRIDGE_STREAM_HEARTBEAT_MS
+      - TELEPHONY_BRIDGE_STREAM_MAX_LONG_POLL_MS
+      - TELEPHONY_BRIDGE_STREAM_DEDUP_TTL_MS
+      - TELEPHONY_BRIDGE_STREAM_DATABASE_URL
+      - TELEPHONY_BRIDGE_STREAM_TABLE_NAME
+      - TELEPHONY_BRIDGE_STREAM_LISTEN_CHANNEL
+      - TELEPHONY_BRIDGE_STREAM_RETENTION_HOURS
+      - TELEPHONY_BRIDGE_STREAM_PG_MAX_CONNECTIONS
+      - TELEPHONY_BRIDGE_STREAM_PERSIST_EVENTS
+      - TELEPHONY_BRIDGE_NATIVE_ROUTE_ENABLED
+      - TELEPHONY_BRIDGE_NATIVE_ROUTE_PREFER_LOCAL
+      - TELEPHONY_BRIDGE_NATIVE_ROUTE_FALLBACK_REASONS
+      - TELEPHONY_BRIDGE_DEFAULT_INBOUND_ACTION
+      - TELEPHONY_BRIDGE_DEFAULT_REJECT_MESSAGE
+      - TELEPHONY_BRIDGE_DEFAULT_OPERATOR_AGENT_AOR
+      - TELEPHONY_BRIDGE_DEFAULT_APP_REF
+      - TELEPHONY_BRIDGE_DEFAULT_AI_APP_REF
+      - TELEPHONY_BRIDGE_RUNTIME_APP_REF
+
+  apiserver:
+    image: fonoster/apiserver-local:0.17.1
+    build:
+      context: /root/fonoster-pack/fonoster
+      dockerfile: mods/apiserver/Dockerfile
+    restart: unless-stopped
+    environment:
+      - APISERVER_APP_URL
+      - APISERVER_ASTERISK_ARI_PROXY_URL
+      - APISERVER_ASTERISK_ARI_SECRET
+      - APISERVER_ASTERISK_ARI_USERNAME
+      - APISERVER_ASTERISK_SYSTEM_DOMAIN
+      - APISERVER_AUTHZ_SERVICE_ENABLED
+      - APISERVER_AUTHZ_SERVICE_HOST
+      - APISERVER_AUTHZ_SERVICE_METHODS
+      - APISERVER_AUTHZ_SERVICE_PORT
+      - APISERVER_CLOAK_ENCRYPTION_KEY
+      - APISERVER_DATABASE_URL
+      - APISERVER_IDENTITY_DATABASE_URL
+      - APISERVER_IDENTITY_ISSUER
+      - APISERVER_IDENTITY_CONTACT_VERIFICATION_REQUIRED
+      - APISERVER_IDENTITY_TWO_FACTOR_AUTHENTICATION_REQUIRED
+      - APISERVER_IDENTITY_WORKSPACE_INVITE_EXPIRATION
+      - APISERVER_IDENTITY_WORKSPACE_INVITE_FAIL_URL
+      - APISERVER_IDENTITY_WORKSPACE_INVITE_URL
+      - APISERVER_IDENTITY_OAUTH2_GITHUB_CLIENT_ID
+      - APISERVER_IDENTITY_OAUTH2_GITHUB_CLIENT_SECRET
+      - APISERVER_IDENTITY_OAUTH2_GITHUB_ENABLED
+      - APISERVER_INFLUXDB_INIT_ORG
+      - APISERVER_INFLUXDB_INIT_PASSWORD
+      - APISERVER_INFLUXDB_INIT_TOKEN
+      - APISERVER_INFLUXDB_INIT_USERNAME
+      - APISERVER_INFLUXDB_URL
+      - APISERVER_LOGS_FORMAT
+      - APISERVER_LOGS_LEVEL
+      - APISERVER_LOGS_TRANSPORT
+      - APISERVER_NATS_URL
+      - APISERVER_OWNER_EMAIL
+      - APISERVER_OWNER_NAME
+      - APISERVER_OWNER_PASSWORD
+      - APISERVER_ROOT_DOMAIN
+      - APISERVER_SMTP_AUTH_PASS
+      - APISERVER_SMTP_AUTH_USER
+      - APISERVER_SMTP_HOST
+      - APISERVER_SMTP_PORT
+      - APISERVER_SMTP_SECURE
+      - APISERVER_SMTP_SENDER
+      - APISERVER_SIGNALING_SERVER
+      - APISERVER_TWILIO_ACCOUNT_SID
+      - APISERVER_TWILIO_AUTH_TOKEN
+      - APISERVER_TWILIO_PHONE_NUMBER
+    expose:
+      - 50051
+    volumes:
+      - ./config/keys:/opt/fonoster/keys:ro
+      - ./config/integrations.json:/opt/fonoster/integrations.json:ro
+
+  autopilot:
+    image: fonoster/autopilot:0.17.1
+    restart: unless-stopped
+    expose:
+      - 50061
+    environment:
+      - AUTOPILOT_AWS_S3_ACCESS_KEY_ID
+      - AUTOPILOT_AWS_S3_ENDPOINT
+      - AUTOPILOT_AWS_S3_REGION
+      - AUTOPILOT_AWS_S3_SECRET_ACCESS_KEY
+      - AUTOPILOT_CONVERSATION_PROVIDER
+      - AUTOPILOT_KNOWLEDGE_BASE_ENABLED
+      - AUTOPILOT_LOGS_FORMAT
+      - AUTOPILOT_LOGS_LEVEL
+      - AUTOPILOT_LOGS_TRANSPORT
+      - AUTOPILOT_OPENAI_API_KEY
+      - AUTOPILOT_RECORDING_BASE_URL
+      - AUTOPILOT_UNSTRUCTURED_API_KEY
+      - AUTOPILOT_UNSTRUCTURED_API_URL
+    volumes:
+      - ./config/integrations.json:/opt/fonoster/integrations.json:ro
+
+  routr:
+    image: fonoster/routr-one:2.13.22
+    restart: unless-stopped
+    labels:
+      - "autoheal=true"
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      DATABASE_URL: ${ROUTR_DATABASE_URL}
+      EXTERNAL_ADDRS: ${ROUTR_EXTERNAL_ADDRS}
+      LOGS_FORMAT: ${ROUTR_LOGS_FORMAT}
+      LOGS_LEVEL: ${ROUTR_LOGS_LEVEL}
+      LOGS_TRANSPORT: ${ROUTR_LOGS_TRANSPORT}
+      NATS_PUBLISHER_ENABLED: true
+      NATS_PUBLISHER_URL: ${ROUTR_NATS_PUBLISHER_URL}
+      RTPENGINE_HOST: ${ROUTR_RTPENGINE_HOST}
+      START_INTERNAL_DB: "false"
+      CONNECT_VERIFIER_PUBLIC_KEY_PATH: /etc/routr/keys/public.pem
+    expose:
+      - 51907
+      - 51908
+    ports:
+      - 5060:5060/udp
+      - 5060-5063:5060-5063
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'nc -z 127.0.0.1 51907 && nc -z 127.0.0.1 51908 && ps -ef | grep -q "[j]ava .*io.routr.Launcher"'
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    volumes:
+      - ./config/keys/public.pem:/etc/routr/keys/public.pem
+
+  # RTPEngine uses a range of ports to handle RTP traffic. Because exposing a large range of ports
+  # is not possible in Docker, we need to use network_mode: host.
+  #
+  # Unfortunately, network_mode: host is not supported for Windows or Mac.
+  # In those cases, we need to use a different approach.
+  #
+  # By default we are opening a small range of ports (10000-10100) to handle RTP traffic.
+  # However, this is not enough for production environments.
+  #
+  # We recommend that when using Linux you use network_mode: host and remove the ports section.
+  rtpengine:
+    image: fonoster/rtpengine:0.3.17
+    restart: unless-stopped
+    platform: linux/x86_64
+    network_mode: host
+    environment:
+      PORT_MAX: ${RTPENGINE_PORT_MAX}
+      PORT_MIN: ${RTPENGINE_PORT_MIN}
+      PUBLIC_IP: ${RTPENGINE_PUBLIC_IP}
+
+  asterisk:
+    image: fonoster/asterisk:20
+    restart: unless-stopped
+    environment:
+      ARI_PROXY_URL: ${ASTERISK_ARI_PROXY_URL}
+      ARI_SECRET: ${ASTERISK_ARI_SECRET}
+      ARI_USERNAME: ${ASTERISK_ARI_USERNAME}
+      CODECS: ${ASTERISK_CODECS}
+      DTMF_MODE: ${ASTERISK_DTMF_MODE}
+      RTP_PORT_END: ${ASTERISK_RTP_PORT_END}
+      RTP_PORT_START: ${ASTERISK_RTP_PORT_START}
+      SIPPROXY_HOST: ${ASTERISK_SIPPROXY_HOST}
+      SIPPROXY_PORT: ${ASTERISK_SIPPROXY_PORT}
+      SIPPROXY_SECRET: ${ASTERISK_SIPPROXY_SECRET}
+      SIPPROXY_USERNAME: ${ASTERISK_SIPPROXY_USERNAME}
+    expose:
+      - 6060
+    volumes:
+      - ./asterisk-sounds/en/custom:/var/lib/asterisk/sounds/en/custom:ro
+
+  postgres:
+    image: postgres:16.10-alpine3.22
+    restart: unless-stopped
+    environment:
+      PGTZ: UTC
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER}
+      TZ: UTC
+    expose:
+      - 5432
+    volumes:
+      - db:/var/lib/postgresql/data
+
+  influxdb:
+    image: influxdb:2.7
+    restart: unless-stopped
+    expose:
+      - 8086
+    environment:
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_INIT_TOKEN}
+      DOCKER_INFLUXDB_INIT_BUCKET: calls
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_INIT_ORG}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_INIT_PASSWORD}
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_INIT_USERNAME}
+    volumes:
+      - influxdb:/var/lib/influxdb2
+
+  nats:
+    image: nats:2.11.8
+    restart: unless-stopped
+    expose:
+      - 4222
+
+  envoy:
+    image: envoyproxy/envoy:v1.35.0
+    restart: unless-stopped
+    volumes:
+      - ./config/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      # If using letsencrypt, you need to mount the letsencrypt directory
+      # by uncommenting the following line and changing the domain name to match your domain.
+      #
+      # Symbolic links will not work here!!!
+      #
+      # - ./path/to/letsencrypt:/etc/letsencrypt:ro
+    ports:
+      - 8449:8449
+      # If using letsencrypt, you need to expose port 443 and remove the default HTTP port (8449)
+      # - 443:443
+
+  autoheal:
+    image: willfarrell/autoheal:latest
+    restart: unless-stopped
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=10
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  db:
+  influxdb:

@@ -1,0 +1,15 @@
+{
+  "name": "fonoster-test-voiceapp",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@fonoster/common": "^0.18.2",
+    "@fonoster/voice": "^0.18.2",
+    "ws": "^8.18.0"
+  }
+}

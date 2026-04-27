@@ -1,0 +1,24 @@
+{
+  "name": "fonoster-apikeys-demo",
+  "version": "1.0.0",
+  "description": "API-first bootstrap and control for virtual PBX + live voice AI on Fonoster",
+  "main": "fonoster-control.js",
+  "scripts": {
+    "help": "node ./fonoster-control.js help",
+    "bootstrap": "node ./fonoster-control.js bootstrap",
+    "status": "node ./fonoster-control.js status",
+    "route:ai": "node ./fonoster-control.js route --number-route-mode=ai",
+    "route:operator": "node ./fonoster-control.js route --number-route-mode=operator",
+    "route:clear": "node ./fonoster-control.js route --number-route-mode=clear",
+    "call": "node ./fonoster-control.js call",
+    "token": "node ./fonoster-control.js token",
+    "test": "node ./fonoster-control.js status"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@fonoster/sdk": "^0.18.2",
+    "dotenv": "^16.4.5"
+  }
+}

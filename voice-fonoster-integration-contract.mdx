@@ -1,0 +1,627 @@
+---
+title: План интеграции голосовой телематики (Fonoster Voice)
+description: Детальный контракт и runbook для Voice-интеграции onelink на провайдере Fonoster.
+---
+
+# План интеграции Voice (Fonoster, non-Twilio)
+
+## 0. Кратко: что это
+
+Документ описывает **контракт Voice на Fonoster**: как настраивается, как проходит жизненный цикл звонка и какие HTTP/API границы считаются стабильными в проде.
+
+Важно:
+
+- Это **не Twilio voice** контракт.
+- Это отдельный поток от каналов чата и от WhatsApp.
+- Базовая модель для всех звонков — `telephony_call_sessions` + связка с `telephony_events`, `number_binding`, `routing_policy`, `agent_binding`.
+
+## 0.1 Проверенные live-gap'ы на текущем стенде
+
+Ниже не теория, а то, что подтверждено по live-проверке Fonoster-стека на `2026-04-27`.
+
+- В этом workspace нет исходников реального Onelink voice backend. `/root/onelink` содержит только `firecrawl`, поэтому утверждения про Onelink-side ниже — это **контрактные ожидания**, а не source-verified реализация Rails-кода.
+- Текущий тестовый DID `+18623964686` должен жить в Routr как:
+  - `numbers.aor_link = sip:voice@default`
+  - `numbers.extra_headers = [{"name":"x-app-ref","value":"96fc259c-6bcd-4cbf-bb7d-d2c51f248934"}]`
+  Это и есть рабочий runtime route на `Onelink Voice Runtime`.
+- Любой drift маршрута на произвольный `agentAor` без реально существующего target, например `sip:1001@company.example`, надо считать поломкой. В таком состоянии SIP-трафик может доходить до `routr`, но `voice-runtime` и `telephony_voice_events` не увидят вызов.
+- В текущей live БД Routr:
+  - `agents = 0`
+  - `domains = 0`
+  - есть только default peer `sip:voice@default`
+  Следствие: `operator` route пока не production-ready, пока не появятся реальные `domains` + `agents` или хотя бы валидные enabled `peers`.
+- В текущем `.env` исторически использовался fallback `TELEPHONY_BRIDGE_DEFAULT_AI_APP_REF=5c0a2ddf-1f6b-4d35-bf89-e4f8f1c3b2ab`, но такого application ref в live Fonoster сейчас нет. Реально существующий runtime app ref: `96fc259c-6bcd-4cbf-bb7d-d2c51f248934`.
+- Для live-диагностики схемы важно помнить реальные колонки:
+  - `telephony_voice_events.ts`, а не `created_at`
+  - `credentials.password`, а не `secret`
+  - в `numbers` нет `ingress_number`
+  - в `peers` нет `domain_ref`
+- У `telephony-bridge` есть отдельный code-gap: истекший refresh token Fonoster SDK может прилететь не как `UNAUTHENTICATED`, а как `13 INTERNAL: Internal server error`. Если bridge это не перехватывает и не делает fresh login, он может упасть на первом же auto-refresh.
+
+## 1. Термины и инварианты
+
+- `call_ref` — внешний идентификатор сессии из Fonoster bridge (`external_call_ref` в базе).
+- `provider_call_sid` — провайдерный SID, если есть (`provider_call_sid`).
+- `conversation_id` — локальная Chatwoot-разговорка.
+- `inbox` — источник воронки маршрутизации (`Channel::Voice` + `telephony_number_binding`).
+- `voice` — интеграция через `provider: 'fonoster'`.
+- `event` — событие от bridge (`session_started`, `answered`, `session_completed` и т.п.).
+
+## 2. Что уже в он-лайн стеке и куда смотреть
+
+Ключевые сущности (код уже есть):
+
+- `telephony_call_sessions` (`app/models/telephony/call_session.rb`) — жизненный цикл звонка.
+- `telephony_events` (`app/models/telephony/event.rb`) — idempotent обработка событий.
+- `telephony_number_bindings` (`app/models/telephony/number_binding.rb`) — привязка номера/Fonoster app.
+- `telephony_routing_policies` (`app/models/telephony/routing_policy.rb`) — режим маршрутизации входящих.
+- `telephony_agent_bindings` (`app/models/telephony/agent_binding.rb`) — привязка агент -> AOR/agent_ref.
+- `Channel::Voice` (`enterprise/app/models/channel/voice.rb`) — UI-конфиг для голосового канала и валидация `provider_config`.
+- Сервис вызовов: `Telephony::CallsService`, `Telephony::EventsIngestionService`, `Telephony::InboundRoutingService`.
+- API-слой:
+  - `Api::V1::Accounts::Telephony::CallsController`
+  - `Api::V1::Accounts::Telephony::ResourcesController`
+  - `Api::V1::Accounts::Telephony::RoutingController`
+  - `Api::V1::Accounts::Telephony::WebphoneController`
+  - `Api::V1::Accounts::Contacts::CallsController` (точка запуска из UI контакта).
+- Bridge entrypoints:
+  - `Telephony::BridgeEventsController`
+  - `Telephony::BridgeRoutesController`
+
+## 3. Архитектурный поток
+
+### 3.1 Outbound (из UI)
+
+1. Агент в UI нажимает call -> `POST /api/v1/accounts/:account_id/contacts/:id/call` с `inbox_id`.
+2. Контроллер `Api::V1::Accounts::Contacts::CallsController#create` проверяет роль и инбокс.
+3. `Voice::OutboundCallBuilder` создает/подхватывает conversation, кладет метаданные звонка и вызывает `Telephony::CallsService#create_outbound!`.
+4. Сервис отправляет POST на bridge `/telephony/calls/outbound`.
+5. Bridge создает сессию, возвращает `call_ref`.
+6. Локальная `call_session` сохраняется/обновляется и синхронизируется по событийному входу.
+
+### 3.2 Inbound (из Fonoster)
+
+1. Fonoster bridge принимает входящий, применяет inbound route decision через `POST /internal/voice/inbound/route`.
+2. Дальше bridge управляет сессией и шлет lifecycle события на `POST /telephony/internal/events` (или совместимый путь `/internal/voice/inbound/event`).
+3. `Telephony::EventsIngestionService`:
+   - применяет идемпотентность;
+   - создает/обновляет `Telephony::CallSession`;
+   - привязывает к conversation/контакту/инбоксу;
+   - обновляет `Conversation#additional_attributes['call_status']`.
+
+## 4. Модель данных и статусы
+
+### 4.1 `telephony_call_sessions`
+
+Allowed статусы в коде:
+- `ringing`
+- `in-progress`
+- `completed`
+- `no-answer`
+- `failed`
+- `queued`
+
+Terminal:
+- `completed`
+- `no-answer`
+- `failed`
+
+Direction:
+- `inbound`
+- `outbound`
+
+Сохраненные поля:
+- `external_call_ref` — ключ сессии.
+- `provider_call_sid`
+- `provider` (по умолчанию `fonoster`)
+- `from_number`, `to_number`
+- `status`, `started_at`, `ended_at`, `duration_seconds`
+- `recording_ref`, `transcript_ref`, `summary`
+- `metadata` (включая оригинальный payload callback).
+
+### 4.2 `telephony_events`
+
+Idempotency ключи:
+- `event_key`
+- `eventKey`
+- `idempotency_key`
+- `idempotencyKey`
+- `X-Idempotency-Key`
+
+Fallback:
+- если ни один ключ idempotency не передан, `event_key()` делает `SHA256(payload)` по JSON-представлению payload.
+
+Статусы события:
+- `received` (новый)
+- `processed`
+- `failed`
+
+### 4.3 Статусы звонка (контракт)
+
+Map в `Telephony::EventsIngestionService::EVENT_STATUS_MAP`:
+
+- `session_started` / `decision_received` -> `ringing`
+- `ringing` -> `ringing`
+- `answered` -> `in-progress`
+- `in-progress` -> `in-progress`
+- `session_completed` -> `completed`
+- `completed` -> `completed`
+- `session_failed` / `unsupported_action` / `failed` -> `failed`
+- `busy` / `no-answer` -> `no-answer`
+- `rejected` -> `failed`
+- `dial_status` -> маппится по `status` внутри nested payload
+
+Fallback:
+- если mapped статус не найден, и явный `status` известен, он используется как есть;
+- если явный status не разобран и eventName равен `unknown`, статус сессии не меняется.
+
+## 5. Контракт API (Chatwoot ↔ UI)
+
+## 5.1 Outbound старт звонка
+
+### `POST /api/v1/accounts/:account_id/contacts/:id/call`
+
+Параметры:
+
+- `inbox_id` (обязательный, должен быть `Channel::Voice`, провайдер `fonoster`)
+
+Ответ (сырой JSON, без envelope `payload`):
+
+```json
+{
+  "conversation_id": 12345,
+  "inbox_id": 77,
+  "call_sid": "call-ref-from-fonoster-bridge",
+  "conference_sid": "uuid"
+}
+```
+
+Ключевое:
+- `call_sid` — это `call_ref`/`external_call_ref`.
+- conversation создается/обновляется в `Voice::InboundCallBuilder`/`Voice::OutboundCallBuilder`.
+- HTTP статус: `200`.
+- Контроллер: `Api::V1::Accounts::Contacts::CallsController` (enterprise).
+
+### `POST /api/v1/accounts/:account_id/telephony/calls/outbound`
+
+Нужен когда вызов инициируется вручную (admin/integrations API):
+
+- `inbox_id` (обяз.)
+- `contact_id` (обяз.)
+
+Ответ (сырой JSON, без `payload`):
+
+```json
+{
+  "conversation_id": 12345,
+  "inbox_id": 77,
+  "call_sid": "call-ref-from-fonoster-bridge",
+  "conference_sid": "uuid",
+  "call_session": {}
+}
+```
+
+- HTTP статус: `201`.
+- Контроллер: `Api::V1::Accounts::Telephony::CallsController`.
+
+Ключевое:
+- `call_sid` — это `call_ref`/`external_call_ref`.
+
+### Нюансы
+
+- На ошибке обычно `422` с `message` и `code`.
+
+## 5.2 Чтение состояния сессий
+
+### `GET /api/v1/accounts/:account_id/telephony/calls`
+
+Параметры:
+- `inbox_id` (необяз.)
+- `status` (необяз., один из ALLOWED_STATUSES)
+- `direction` (необяз., `inbound|outbound`)
+- `limit` (1..100, по умолчанию 50)
+
+Возвращает список `to_telephony_h` (обертка payload + meta count).
+
+Пример:
+
+```json
+{
+  "payload": [
+    {
+      "id": 1,
+      "call_ref": "abc123",
+      "provider": "fonoster",
+      "status": "ringing",
+      "direction": "outbound",
+      "conversation_id": 12345
+    }
+  ],
+  "meta": {
+    "count": 1
+  }
+}
+```
+
+### `GET /api/v1/accounts/:account_id/telephony/calls/:call_ref`
+
+Возвращает `to_telephony_h` с деталями сессии.
+
+Дополнительно:
+- `include_bridge=true` — добавляет `bridge` через `Telephony::CallsService#find_remote` (GET `/telephony/calls/:call_ref` в bridge).
+
+### `GET /api/v1/accounts/:account_id/telephony/resources/readiness`
+
+Служебный endpoint для проверки готовности:
+- bridge `healthz`,
+- количество/готовность Fonoster-инбоксов,
+- синхронизированность привязок и политик.
+
+Пример:
+
+```json
+{
+  "payload": {
+    "ready": true,
+    "bridge": {
+      "configured": true,
+      "reachable": true,
+      "healthy": true,
+      "checks": {
+        "healthz_ok": true,
+        "bridge_service": true,
+        "fonoster_reachable": true,
+        "onelink_callback_configured": true
+      }
+    },
+    "account": {
+      "feature_enabled": true,
+      "fonoster_inboxes_count": 1
+    },
+    "inboxes": []
+  }
+}
+```
+
+## 5.3 Вебфон и браузерный клиент
+
+### `POST /api/v1/accounts/:account_id/telephony/webphone/token`
+
+Параметры:
+- `inbox_id` — опционально.
+- auth через обычный сесс-/JWT user token.
+
+Ответ должен содержать:
+- `provider` = `fonoster`
+- `token`, `username`, `domain`, `signalingServer`/`signaling_server`, `targetAor`/`target_aor`/`aor`
+- `calling_supported` (должен быть `false`, если не хватает обязательного набора)
+- при необходимости `agent_ref`
+
+В фронтенде:
+- инициализатор токена принимает `snake_case` и camelCase поля;
+- браузерный звонок работает только при `calling_supported = true`;
+- валидация обязательных полей: `token && username && domain && signalingServer && targetAor` (с учетом fallback-names).
+
+Пример:
+
+```json
+{
+  "provider": "fonoster",
+  "token": "jwt-or-signed-token",
+  "username": "agent-100",
+  "domain": "voip.example.com",
+  "signalingServer": "wss://voip.example.com/ws",
+  "targetAor": "sip:agent-100@voip.example.com",
+  "calling_supported": true,
+  "agent_ref": "agent-100"
+}
+```
+
+## 5.4 Роутинг и управление политиками
+
+### `POST /api/v1/accounts/:account_id/telephony/numbers/:number_ref/route`
+
+Payload:
+- `mode: operator|app|ai|reject`
+- `app_ref`
+- `ai_app_ref`
+- `operator_agent_ref`
+- `operator_agent_aor`
+- `fallback_mode`
+- `fallback_message`
+
+Ответ включает `payload` и `meta.bridge` (результат от bridge `/telephony/numbers/:number_ref/route`).
+
+### `POST /api/v1/accounts/:account_id/telephony/ai/toggle`
+
+Payload:
+- `number_ref`
+- `enabled` (boolean)
+- `ai_app_ref` (optional)
+
+### 5.5 Ошибки и коды
+
+- Формат ошибки:
+
+```json
+{
+  "code": "CODE",
+  "error": "message",
+  "details": {}
+}
+```
+
+- Частые коды:
+- `VALIDATION_ERROR` -> `422`
+- `CALL_REF_REQUIRED` -> `422`
+- `ACCOUNT_NOT_FOUND` -> `404`
+- `VOICE_INBOX_NOT_BOUND` -> `422`
+- `VOICE_INBOX_NOT_FOUND` -> `422`
+- `INVALID_BRIDGE_RESPONSE` -> `502`
+- `BRIDGE_NOT_CONFIGURED` -> `503`
+- `BRIDGE_REQUEST_FAILED` -> код из bridge или `502/400...`
+- `FEATURE_DISABLED` -> `403`
+
+## 6. Контракт bridge-потока (Fonoster API ↔ Chatwoot)
+
+### 6.1 Базовая auth (входящие bridge webhooks/route)
+
+На `Telephony::BridgeBaseController`:
+
+- Проверяется один из источников:
+  - header `X-Bridge-Secret`
+  - header `X-Telephony-Secret`
+  - `Authorization: Bearer ...`
+  - env:
+    - `TELEPHONY_BRIDGE_SHARED_SECRET`
+    - `TELEPHONY_BRIDGE_ACCESS_TOKEN`
+- Если env-переменные пустые, входящий callback/route не режет авторизацию.
+- Если ни один не передан/не совпал — `401`.
+- `X-Account-Id` также учитывается и мержится в payload как `account_id`.
+
+### 6.2 События сессий
+
+#### Endpoints
+
+- `POST /telephony/internal/events`
+- `POST /internal/voice/inbound/event` (compat alias)
+
+#### Обязательный/базовый payload
+
+- `call_ref` (`callRef`, `call_sid`, `callSid`, `ref`)
+- `event` / `event_type` / `eventType`
+- `status` (по возможности маппится)
+- `direction`
+- `number_ref` / `numberRef` (предпочтительно для привязки номера)
+- `provider_call_sid` / `providerCallSid` (если есть)
+- `metadata` (объект; в нем важны `chatwoot_*`).
+
+Опционально:
+- `conversation_id`, `conversation_display_id`, `contact_id`, `contactId`
+- `inbox_id`, `account_id`
+- `agent_ref`, `agentRef`, `chatwoot_user_id`
+- `recording_ref`, `transcript_ref`, `transcript`
+- `call_duration`, `started_at`, `ended_at`
+
+#### Idempotency contract
+
+- event dedupe на уровне `event_key` (или `eventKey`, `idempotency_key` / `idempotencyKey` / `X-Idempotency-Key`).
+- если событие уже обработано как `processed`, повторный вызов не создает side-effects;
+- повторный идентичный payload возвращает текущий `call_ref`.
+
+#### Что делает ingestion сервис
+
+1. resolve аккаунта (через `account_id`/`chatwoot_*` metadata/`number_ref`/`inbound_number`).
+2. upsert `telephony_events` по `event_key`.
+3. upsert `telephony_call_sessions` по `external_call_ref`.
+4. resolve/создать inbound conversation если нужно.
+5. обновить статус звонка и conversation metadata (`call_status`, `call_started_at`, `call_ended_at`, `call_duration`).
+6. при наличии последнего voice message обновить его payload (`recording_ref`, `transcript`, `duration`).
+7. вернуть `telephony/bridge_events` ответ в формате `{ status, call_ref, conversation_id }`.
+
+### 6.3 inbound route decision
+
+#### Endpoint
+- `POST /internal/voice/inbound/route`
+
+#### Входной payload
+
+- `call_ref`, `ingress_number`, `caller_number`
+- `number_ref` (optional)
+- `event`/`app_ref` (для anti-recursive checks на app)
+
+#### Выходной контракт
+- `action: operator|app|ai|reject`
+- `reason` (диагностика)
+
+Примеры полей:
+- `action: operator` + `agent_aor` или `destination`
+- `action: app|ai` + `app_ref`
+- `action: reject` + `message`
+
+Минимальный пример:
+
+```json
+{
+  "action": "operator",
+  "reason": "operator_route"
+}
+```
+
+Критические ограничения для route decision:
+
+- Onelink route handler **не должен** возвращать runtime app ref `96fc259c-6bcd-4cbf-bb7d-d2c51f248934` как целевой `app_ref` в `action=app|ai`.
+  Этот ref уже является `runtime` entrypoint, и `telephony-bridge` должен рассматривать такой ответ как recursive target.
+- Если номер не привязан к voice channel/binding на стороне Onelink, нормальный явный ответ — `action=reject`, `reason=number_not_bound`.
+- Если `action=operator`, то итоговый `agent_aor` обязан существовать в Routr как:
+  - enabled `agent` + соответствующий `domain`, или
+  - enabled `peer`
+  Без этого route technically accepted by business logic, but not executable by SIP runtime.
+
+## 7. Конфигурация в Chatwoot для Fonoster
+
+### 7.1 Включение функции и канал
+
+1. Feature flag: `channel_voice` должен быть включен у аккаунта.
+2. В инбокс создается `Channel::Voice` с:
+   - `provider: 'fonoster'`
+   - `provider_config`:
+     - `number_ref` (или `fonoster_number_ref`)
+     - `routing_mode` (`operator|app|ai|reject`)
+     - `app_ref` (если `routing_mode=app`)
+     - `ai_app_ref` (если `ai` или ai-fallback)
+     - `operator_agent_aor` или `operator_agent_ref`
+     - `fallback_mode` (`reject|operator|app|ai`)
+     - `fallback_message` (для reject)
+3. После сохранения вызывается `sync_fonoster_binding` и автоматически создается/обновляется `telephony_number_binding`.
+4. В `routing_policy` на уровне `number_binding` формируется/валидируется bridge-compatible режим:
+   - `operator` => целевой AOR/destination
+   - `app` => appRef
+   - `ai` => ai app ref
+   - `reject` => fallback message
+
+### 7.2 Подготовка агентских binding
+
+Необязательный, но типичный путь:
+- создать/подтянуть `telephony_agent_bindings` для пользователей;
+- у активного оператора должен быть `agent_ref`, `agent_aor` или возможность через `operator_agent_ref`;
+- включение/выключение агента через `POST /api/v1/accounts/:account_id/telephony/agents/:agent_ref/enabled`.
+
+### 7.2.1 Что обязательно должно существовать в Fonoster DB
+
+Для того чтобы контракт был не только описан, но и исполним, в Fonoster/Routr должны существовать реальные записи, а не только env/config:
+
+- Для runtime inbound route:
+  - строка в `numbers` для DID
+  - `aor_link = sip:voice@default`
+  - `extra_headers` с `x-app-ref=<runtime_app_ref>`
+- Для runtime transport:
+  - enabled peer `sip:voice@default` в `peers`
+- Для operator/browser route:
+  - минимум одна запись в `domains`
+  - минимум одна запись в `credentials`
+  - минимум одна enabled запись в `agents` или `peers`, совпадающая с целевым `agent_aor`
+- Для событийного ingestion:
+  - таблица `telephony_voice_events`
+  - живой поток вставок через `/internal/voice/inbound/event`
+
+Практический признак неисправности:
+
+- если в `routr` видны `INVITE/REGISTER`, но в `telephony_voice_events` нет новых строк, значит вызов не дошел до runtime event path и проблема находится раньше, чем Onelink event ingestion.
+
+### 7.3 Проверка readiness
+
+`GET /api/v1/accounts/:account_id/telephony/resources/readiness` должен быть `ready=true` для production:
+- bridge настроен (`TELEPHONY_BRIDGE_BASE_URL` есть, `/healthz` ok),
+- все Fonoster-инбоксы синхронизированы (`number_binding`/`routing_policy`),
+- feature flag `channel_voice` включен,
+- нет блокирующих предупреждений readiness.
+
+## 8. Как настраивать Fonoster (с практической стороны)
+
+1. Настроить endpoint inbound route в Fonoster на `https://<your-domain>/internal/voice/inbound/route`.
+2. Для некоторых bridge-сборок дополнительно пробросить alias на `/internal/voice/inbound/event` только если это требуется.
+3. Настроить событийный endpoint на `https://<your-domain>/telephony/internal/events`.
+4. Для browser/SIP токенизации передать корректный публичный URL reachability.
+5. Передавать `X-Bridge-Secret`/`TELEPHONY_BRIDGE_SHARED_SECRET` или `Authorization: Bearer TELEPHONY_BRIDGE_ACCESS_TOKEN`.
+5. Включить мониторинг `/healthz` bridge и метрики ошибок callback'ов.
+
+### 8.1 Что обязательно исправить в live-конфиге до production
+
+- `TELEPHONY_BRIDGE_DEFAULT_AI_APP_REF` должен указывать на реально существующий app ref, а не на исторический UUID без записи в Fonoster.
+- Любой route switch в `operator` mode должен валидироваться against live Routr DB до применения.
+- После изменения `telephony-bridge/src/routrDb.js` или `telephony-bridge/src/fonoster.js` контейнер bridge нужно пересобирать и перезапускать; иначе в live останется старое поведение, даже если source уже исправлен.
+- Если Onelink backend еще отдает `number_not_bound`, production DID нельзя считать готовым, даже если SIP trunk, runtime app и bridge healthz внешне зеленые.
+
+## 9. Полный контракт состояния (операционный)
+
+### 9.1 Source of truth
+
+- Источник статуса звонка в системе — `Telephony::CallSession.status`.
+- Сторона веб-интерфейса/agent UI должна только отображать этот статус и использовать `include_bridge` для ручного reconcile при нестабильном WS.
+
+### 9.2 Разрешенные состояния
+
+`queued -> ringing -> in-progress -> completed|no-answer|failed`
+
+### 9.3 Конфликтные переходы
+
+- `failed/completed` terminal: после них новые статусы должны переводить только через idempotent policy / last transition guard.
+- `in-progress` не должен «затираться» поздним `ringing` (аналогично поздним outdated events).
+- На stale event из bridge используем `last_transition_at` и естественный перезапис/guard по последней логике модели.
+
+## 10. Наблюдаемость
+
+### Логи
+
+Включаются через env:
+- `TELEPHONY_DEBUG_LOGGING=true`
+- `TELEPHONY_BRIDGE_DEBUG_LOG_PATH=/path/to/file` (по умолчанию `/tmp/telephony-events.log`)
+
+Логируются этапы:
+- `telephony_inbound_event_request`
+- `telephony_inbound_event_response`
+- `telephony_inbound_event_error`
+- `telephony_inbound_route_request`
+- `telephony_inbound_route_response`
+- `telephony_inbound_route_error`
+
+### Метрики / алерты (минимум)
+
+- rate 5xx bridge callback endpoint
+- дубли `event_key` выше порога
+- время нахождения `ringing` выше SLA
+- рост `failed` по инцидентам
+- mismatch readiness (`bridge.configured=false`, `bridge.reachable=false`)
+
+## 11. Практические кейсы (must-have)
+
+1. Выходящий звонок: `queued/ringing -> in-progress -> completed`.
+2. Исходящий неотвеченный: `ringing -> no-answer`.
+3. Сброс/ошибка провайдера: `inbound/outbound -> failed`.
+4. Inbound при отключенном/inactive operator:
+   - применить `fallback_mode` или `reject` с понятным сообщением.
+5. Повтор webhook с тем же `event_key`:
+   - без дубля call session, без SQL unique violation.
+6. Изменение роутинга через API:
+   - `routing_policy` меняется локально;
+   - отправляется синхронно обновление в bridge.
+
+## 12. Чеклист продового запуска (пошагово)
+
+### Перед включением
+- `channel_voice` включен.
+- Создан минимум один `Channel::Voice` с `provider: fonoster`.
+- Есть валидный `number_binding` и `routing_policy`.
+- `readiness` endpoint возвращает `ready=true`.
+- Проверены endpoint-ы bridge (`/telephony/internal/events`, `/internal/voice/inbound/route`, `/telephony/calls/outbound`).
+
+### Smoke
+- Один outbound звонок от агента.
+- Один inbound звонок на номер с route `operator`.
+- Один inbound с `fallback_mode=reject`.
+- Проверка `GET /telephony/calls/:call_ref` + include bridge true.
+- Проверка записи и transcript sync если есть в callback payload.
+
+### Post-launch
+- Вести `ready`, `failed_rate`, `stale_ringing_count`.
+- Проверить rollback:
+  - disable feature flag `channel_voice` (глобально),
+  - temporary disable по инбоксу,
+  - emergency fallback message в routing policy.
+
+## 13. Чем это НЕ является (чтобы не путаться)
+
+- Это не Twilio Voice (`/twilio/voice/*` не затрагивается).
+- Это не WhatsApp Calls flow.
+- Это не WebSMS/текстовые сообщения в `conversation.message`.
+- Это не SIP-провайдер, который использует PSTN TwiML SID flow.
+
+## 14. Короткий вывод
+
+Сейчас в onelink Voice/Fonoster уже сквозной и рабочий контракт:
+`Contact/Conversation -> Outbound API -> Bridge outbound -> Event ingestion -> State + conversation attributes -> UI/Webphone`.
+
+Нужно держать в голове:
+главный источник правды — `call_ref` + `telephony_call_sessions`,
+а все события в bridge обязаны строго проходить через idempotency + route contract.

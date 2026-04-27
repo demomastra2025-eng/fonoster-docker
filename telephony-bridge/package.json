@@ -1,0 +1,15 @@
+{
+  "name": "fonoster-telephony-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/server.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@fonoster/sdk": "^0.18.2",
+    "express": "^5.1.0",
+    "pg": "^8.16.3"
+  }
+}
