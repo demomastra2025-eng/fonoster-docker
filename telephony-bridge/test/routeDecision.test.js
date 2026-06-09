@@ -190,6 +190,31 @@ test('operator-first outbound metadata executes runtime handoff by default', () 
   assert.equal(decision.operatorFirstClassProductionPath, true);
 });
 
+test('operator-first outbound uses provider dial destination ahead of display number', () => {
+  const decision = buildOutboundRuntimeDecision({
+    callRef: 'outbound-call-provider-target',
+    appRef: 'runtime-router-app',
+    direction: 'outbound',
+    ingressNumber: '207',
+    metadata: {
+      routing_mode: 'operator',
+      operator_first_outbound: true,
+      outbound_dial_destination: 'PJSIP/77066318623@sipuni-onelink-endpoint',
+      outbound_target_number: '+77066318623',
+      customer_number: '+77066318623',
+      agent_aor: 'sip:1001@operator.example.test',
+      fonoster_agent_ref: '1001'
+    }
+  });
+
+  assert.equal(decision.action, 'outbound_target');
+  assert.equal(decision.destination, 'PJSIP/77066318623@sipuni-onelink-endpoint');
+  assert.equal(decision.phoneNumber, 'PJSIP/77066318623@sipuni-onelink-endpoint');
+  assert.equal(decision.outboundTargetNumber, 'PJSIP/77066318623@sipuni-onelink-endpoint');
+  assert.equal(decision.callDirection, 'outbound');
+  assert.equal(decision.answerBeforeDial, true);
+});
+
 test('operator-first outbound runtime callback honors explicit disable', () => {
   const decision = buildOutboundRuntimeDecision({
     callRef: 'outbound-call-operator-first-disabled',

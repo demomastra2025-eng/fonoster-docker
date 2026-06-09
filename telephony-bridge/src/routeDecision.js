@@ -873,6 +873,14 @@ function isOperatorFirstOutbound(inbound = {}, metadata = outboundRuntimeMetadat
 
 function outboundTargetNumber(inbound = {}, metadata = outboundRuntimeMetadata(inbound)) {
   return firstNonEmpty(
+    inbound.outboundDialDestination,
+    inbound.outbound_dial_destination,
+    inbound.sipuniOutboundDialDestination,
+    inbound.sipuni_outbound_dial_destination,
+    metadata.outboundDialDestination,
+    metadata.outbound_dial_destination,
+    metadata.sipuniOutboundDialDestination,
+    metadata.sipuni_outbound_dial_destination,
     inbound.outboundTargetNumber,
     inbound.outbound_target_number,
     inbound.targetNumber,

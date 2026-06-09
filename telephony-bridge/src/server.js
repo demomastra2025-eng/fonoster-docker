@@ -2568,8 +2568,7 @@ function sipuniDirectAsteriskOutboundEnabled(metadata = {}) {
 }
 
 function isSipuniAsteriskOutbound(payload = {}, metadata = {}) {
-  return isSipuniOutboundNumberRef(payload, metadata) &&
-    sipuniDirectAsteriskOutboundEnabled(metadata);
+  return isSipuniOutboundNumberRef(payload, metadata);
 }
 
 function operatorFirstOutboundEnabled(metadata = {}) {
@@ -2617,24 +2616,46 @@ function sipuniRuntimeNumberRef(metadata = {}) {
   );
 }
 
+function sipuniOutboundDialDestination(payload = {}) {
+  const destination = normalizeSipuniOutboundDestination(payload.to);
+  const endpointName = config.asterisk?.sipuniOutboundEndpoint || "";
+  if (!destination || !endpointName) return "";
+
+  return `PJSIP/${destination}@${endpointName}`;
+}
+
 function sipuniRuntimeOutboundPayload(payload = {}, metadata = {}) {
   const sourceNumberRef = resolveSipuniAsteriskNumberRef(payload, metadata);
   const runtimeNumberRef = sipuniRuntimeNumberRef(metadata);
+  const dialDestination = sipuniOutboundDialDestination(payload);
 
   return {
     ...payload,
-    fromNumberRef: sourceNumberRef || payload.fromNumberRef,
-    from_number_ref: sourceNumberRef || payload.from_number_ref,
+    from: undefined,
+    fromNumberRef: undefined,
+    from_number_ref: undefined,
     metadata: {
       ...metadata,
-      source: "sipuni_local_asterisk_outbound",
-      provider_path: "asterisk_sipuni",
-      providerPath: "asterisk_sipuni",
+      source: "sipuni_native_runtime_outbound",
+      provider_path: "sipuni_native_runtime_outbound",
+      providerPath: "sipuni_native_runtime_outbound",
       sipuni_internal_outbound: true,
       sipuni_original_number_ref: sourceNumberRef,
       sipuniOriginalNumberRef: sourceNumberRef,
-      sipuni_runtime_number_ref: runtimeNumberRef || "",
-      sipuniRuntimeNumberRef: runtimeNumberRef || "",
+      ...(runtimeNumberRef
+        ? {
+            sipuni_runtime_number_ref: runtimeNumberRef,
+            sipuniRuntimeNumberRef: runtimeNumberRef
+          }
+        : {}),
+      ...(dialDestination
+        ? {
+            outbound_dial_destination: dialDestination,
+            outboundDialDestination: dialDestination,
+            sipuni_outbound_dial_destination: dialDestination,
+            sipuniOutboundDialDestination: dialDestination
+          }
+        : {}),
       sipuni_ingress_number: config.asterisk?.sipuniOutboundIngressNumber || "",
       sipuniIngressNumber: config.asterisk?.sipuniOutboundIngressNumber || "",
       sipuni_internal_number: config.asterisk?.sipuniOutboundCallerId || "",
@@ -2650,6 +2671,45 @@ function normalizeSipuniOutboundDestination(value) {
     digits = `7${digits.slice(1)}`;
   }
   return digits.length >= 3 ? digits : "";
+}
+
+function normalizeAnalogOutboundDestination(value) {
+  let digits = String(value || "").replace(/\D/g, "");
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  if (digits.length === 11 && digits.startsWith("7")) {
+    digits = `8${digits.slice(1)}`;
+  }
+  return digits.length >= 3 ? digits : "";
+}
+
+function isAnalogAsteriskOutbound(payload = {}, metadata = {}) {
+  const numberRef = resolveSipuniAsteriskNumberRef(payload, metadata);
+  const runtimeNumberRef = config.asterisk?.sipuniOutboundRuntimeNumberRef || "";
+  const from = firstNonEmpty(
+    payload.from,
+    payload.from_number,
+    metadata.from,
+    metadata.from_number,
+    metadata.ingressNumber,
+    metadata.ingress_number
+  );
+
+  return Boolean(
+    (numberRef && runtimeNumberRef && numberRef === runtimeNumberRef) ||
+      from === "9098"
+  );
+}
+
+function outboundDialDestinationForPayload(payload = {}, metadata = {}) {
+  if (isSipuniOutboundNumberRef(payload, metadata)) {
+    return sipuniOutboundDialDestination(payload);
+  }
+
+  if (isAnalogAsteriskOutbound(payload, metadata)) {
+    return normalizeAnalogOutboundDestination(payload.to);
+  }
+
+  return "";
 }
 
 function asteriskAriAuthHeader() {
@@ -4300,7 +4360,6 @@ async function buildOutboundCallResponse(req) {
 
   const operatorFirstOutbound =
     operatorFirstOutboundEnabled(payloadMetadata) &&
-    !sipuniRuntimeOutbound &&
     routingMode === "operator" &&
     Boolean(operatorAgentAor);
   const sipuniProviderFirstOutbound =
@@ -4309,13 +4368,14 @@ async function buildOutboundCallResponse(req) {
     isSipuniOutboundNumberRef(payload, payloadMetadata);
   const providerCallTarget = operatorFirstOutbound ? operatorAgentAor : payload.to;
   const providerPath = sipuniRuntimeOutbound
-    ? "asterisk_sipuni"
+    ? "sipuni_native_runtime_outbound"
     : operatorFirstOutbound
       ? "fonoster_operator_first"
       : sipuniProviderFirstOutbound
         ? "fonoster_sipuni_provider_first"
-      : "fonoster_direct";
+        : "fonoster_direct";
   const providerFirstMetadata = sipuniProviderFirstMetadata(payload, payloadMetadata);
+  const outboundDialDestination = outboundDialDestinationForPayload(payload, callPayloadMetadata);
   const createCallMetadata = operatorFirstOutbound
     ? {
         ...outboundMetadata,
@@ -4323,6 +4383,12 @@ async function buildOutboundCallResponse(req) {
         allowOperatorFirstOutbound: true,
         operator_first_outbound: true,
         operatorFirstOutbound: true,
+        ...(outboundDialDestination
+          ? {
+              outbound_dial_destination: outboundDialDestination,
+              outboundDialDestination: outboundDialDestination
+            }
+          : {}),
         outbound_target_number: payload.to,
         outboundTargetNumber: payload.to,
         target_number: payload.to,
@@ -4353,6 +4419,7 @@ async function buildOutboundCallResponse(req) {
     fromNumberRef: resolveSipuniAsteriskNumberRef(payload, payloadMetadata) || payload.fromNumberRef || payload.from_number_ref || null,
     to: payload.to,
     providerTo: providerCallTarget,
+    outboundDialDestination: outboundDialDestination || null,
     operatorFirstOutbound,
     sipuniRuntimeOutbound,
     sipuniProviderFirstOutbound,
@@ -4360,35 +4427,36 @@ async function buildOutboundCallResponse(req) {
   });
 
   if (sipuniRuntimeOutbound) {
-    created = await createSipuniAsteriskOutboundCall({
-      payload: callPayload,
-      payloadMetadata: callPayloadMetadata,
-      appDecision,
-      outboundMetadata,
-      routingMode,
-      accountId,
-      requestId,
-      idempotencyKey
-    });
-    from =
-      config.asterisk?.sipuniOutboundCallerId ||
-      normalizeDialableNumber(callPayload.from) ||
-      normalizeDialableNumber(payload.from);
+    from = config.asterisk?.sipuniOutboundCallerId || "207";
   } else {
     from = await withSdkRetry((sdk) => resolveFromNumber(sdk, callPayload));
-    if (!from) {
-      throw new Error("from or from_number_ref is required");
-    }
+  }
 
-    created = await withSdkRetry((sdk) =>
-      sdk.createCallWithSafeTracking({
-        from,
-        to: providerCallTarget,
-        appRef: appDecision.appRef || undefined,
-        timeout: payload.timeout || undefined,
-        metadata: createCallMetadata
-      })
-    );
+  if (!from) {
+    throw new Error("from or from_number_ref is required");
+  }
+
+  created = await withSdkRetry((sdk) =>
+    sdk.createCallWithSafeTracking({
+      from,
+      to: providerCallTarget,
+      appRef: appDecision.appRef || undefined,
+      timeout: payload.timeout || undefined,
+      metadata: createCallMetadata
+    })
+  );
+
+  if (sipuniRuntimeOutbound) {
+    logger.info("created Sipuni operator-first outbound runtime call", {
+      callRef: created.ref,
+      from,
+      to: payload.to,
+      providerTo: providerCallTarget,
+      dialDestination: outboundDialDestination || "",
+      routingMode,
+      accountId,
+      requestId
+    });
   }
 
   const statusProvider = created.provider || "fonoster";
