@@ -30,17 +30,72 @@ function resetCircuit() {
 }
 
 function buildCompatibilityPayload(payload = {}) {
+  const metadata = payload.metadata && typeof payload.metadata === "object"
+    ? payload.metadata
+    : {};
+  const bridgeCallRef =
+    payload.bridge_call_ref ||
+    payload.bridgeCallRef ||
+    payload.parent_call_ref ||
+    payload.parentCallRef ||
+    payload.provider_call_id ||
+    payload.providerCallId ||
+    payload.call_ref ||
+    payload.callRef ||
+    null;
+  const runtimeCallRef =
+    payload.runtime_call_ref ||
+    payload.runtimeCallRef ||
+    payload.child_call_ref ||
+    payload.childCallRef ||
+    null;
+  const numberRef =
+    payload.number_ref ||
+    payload.numberRef ||
+    metadata.number_ref ||
+    metadata.numberRef ||
+    metadata.onelink_number_ref ||
+    metadata.onelinkNumberRef ||
+    null;
+  const inboxId =
+    payload.inbox_id ||
+    payload.inboxId ||
+    metadata.inbox_id ||
+    metadata.inboxId ||
+    metadata.chatwoot_inbox_id ||
+    metadata.chatwootInboxId ||
+    null;
+
   return {
     ...payload,
-    call_ref: payload.call_ref || payload.callRef || null,
-    callRef: payload.callRef || payload.call_ref || null,
+    ...(bridgeCallRef && payload.call_ref && payload.call_ref !== bridgeCallRef
+      ? { legacy_call_ref: payload.call_ref, legacyCallRef: payload.call_ref }
+      : {}),
+    call_ref: bridgeCallRef,
+    callRef: bridgeCallRef,
+    bridge_call_ref: bridgeCallRef,
+    bridgeCallRef: bridgeCallRef,
+    parent_call_ref: payload.parent_call_ref || bridgeCallRef,
+    parentCallRef: payload.parentCallRef || bridgeCallRef,
+    provider_call_id: payload.provider_call_id || bridgeCallRef,
+    providerCallId: payload.providerCallId || bridgeCallRef,
+    runtime_call_ref: runtimeCallRef,
+    runtimeCallRef: runtimeCallRef,
+    child_call_ref: payload.child_call_ref || runtimeCallRef,
+    childCallRef: payload.childCallRef || runtimeCallRef,
+    media_session_ref: payload.media_session_ref || payload.mediaSessionRef || null,
+    mediaSessionRef: payload.mediaSessionRef || payload.media_session_ref || null,
+    app_ref: payload.app_ref || payload.appRef || null,
+    appRef: payload.appRef || payload.app_ref || null,
     ingress_number: payload.ingress_number || payload.ingressNumber || null,
     ingressNumber: payload.ingressNumber || payload.ingress_number || null,
     caller_number: payload.caller_number || payload.callerNumber || null,
     callerNumber: payload.callerNumber || payload.caller_number || null,
     received_at: payload.received_at || payload.receivedAt || null,
     receivedAt: payload.receivedAt || payload.received_at || null,
-    metadata: payload.metadata || {}
+    ...(numberRef ? { number_ref: numberRef, numberRef } : {}),
+    ...(inboxId ? { inbox_id: inboxId, inboxId } : {}),
+    metadata
   };
 }
 
@@ -96,7 +151,10 @@ function buildRequestHeaders({ accountId, requestId, idempotencyKey } = {}) {
   return {
     "content-type": "application/json",
     ...(config.onelink.accessToken
-      ? { authorization: `Bearer ${config.onelink.accessToken}` }
+      ? {
+          authorization: `Bearer ${config.onelink.accessToken}`,
+          "x-bridge-secret": config.onelink.accessToken
+        }
       : {}),
     ...(selectedAccountId ? { "x-account-id": selectedAccountId } : {}),
     ...(idempotencyKey ? { "x-idempotency-key": idempotencyKey } : {}),
@@ -123,15 +181,21 @@ async function requestOnelink(path, body, options = {}) {
     body.idempotency_key ||
     body.idempotencyKey ||
     "";
+  const maxRetries = Number.isFinite(Number(options.maxRetries))
+    ? Math.max(0, Number(options.maxRetries))
+    : config.onelink.maxRetries;
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+    ? Math.max(250, Number(options.timeoutMs))
+    : config.onelink.timeoutMs;
 
   let lastError;
 
-  for (let attempt = 0; attempt <= config.onelink.maxRetries; attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const startedAt = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
-      config.onelink.timeoutMs
+      timeoutMs
     );
 
     try {
@@ -171,7 +235,7 @@ async function requestOnelink(path, body, options = {}) {
         message: classified.message
       });
 
-      if (!classified.retryable || attempt >= config.onelink.maxRetries) {
+      if (!classified.retryable || attempt >= maxRetries) {
         openCircuit();
         throw classified;
       }
@@ -186,6 +250,19 @@ async function requestOnelink(path, body, options = {}) {
   }
 
   throw lastError || new Error("unknown onelink request failure");
+}
+
+function isTerminalRuntimeEvent(event = {}) {
+  const eventType = String(event.eventType || event.event_type || "").toLowerCase();
+  const currentStatus = String(event.currentStatus || event.current_status || "").toLowerCase();
+  return Boolean(
+    event.terminal === true ||
+      event.terminal === "true" ||
+      eventType === "session_completed" ||
+      eventType === "session_failed" ||
+      eventType === "app_handoff_failed" ||
+      ["completed", "failed", "cancelled", "canceled"].includes(currentStatus)
+  );
 }
 
 async function lookupInboundContext(inbound, options = {}) {
@@ -272,6 +349,7 @@ async function forwardInboundEvent(event, options = {}) {
   }
 
   const body = buildCompatibilityPayload(event);
+  const terminal = isTerminalRuntimeEvent(body);
   const { payload, latencyMs } = await requestOnelink(
     config.onelink.eventPath,
     body,
@@ -282,13 +360,16 @@ async function forwardInboundEvent(event, options = {}) {
         event.idempotencyKey ||
         "",
       accountId: options.accountId,
-      requestId: options.requestId
+      requestId: options.requestId,
+      maxRetries: terminal ? Math.max(config.onelink.maxRetries, 8) : 0,
+      timeoutMs: terminal ? Math.max(config.onelink.timeoutMs, 15000) : config.onelink.timeoutMs
     }
   );
 
   logger.info("forwarded runtime event to onelink", {
     eventType: event.eventType || event.event_type || null,
     callRef: event.callRef || event.call_ref || null,
+    terminal,
     latencyMs
   });
 
