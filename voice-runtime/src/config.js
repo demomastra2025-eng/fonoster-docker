@@ -29,7 +29,32 @@ const config = {
     "This call route is not available yet.",
   defaultTransferMessage:
     process.env.VOICE_RUNTIME_TRANSFER_MESSAGE ||
-    "Please hold while we connect your call."
+    "Please hold while we connect your call.",
+  appHandoffStatusTimeoutMs: asNumber(
+    process.env.VOICE_RUNTIME_APP_HANDOFF_STATUS_TIMEOUT_MS,
+    120000
+  ),
+  appHandoffTerminalTimeoutMs: asNumber(
+    process.env.VOICE_RUNTIME_APP_HANDOFF_TERMINAL_TIMEOUT_MS,
+    300000
+  ),
+  controlEventsEnabled: asBoolean(
+    process.env.VOICE_RUNTIME_CONTROL_EVENTS_ENABLED,
+    true
+  ),
+  controlPollMs: asNumber(
+    process.env.VOICE_RUNTIME_CONTROL_POLL_MS,
+    500
+  ),
+  recordingBaseUrl:
+    process.env.VOICE_RUNTIME_RECORDING_BASE_URL ||
+    (process.env.APISERVER_APP_URL
+      ? `${String(process.env.APISERVER_APP_URL).replace(/\/+$/, "")}/api/recordings`
+      : ""),
+  recordingReadyDelayMs: asNumber(
+    process.env.VOICE_RUNTIME_RECORDING_READY_DELAY_MS,
+    1500
+  )
 };
 
 module.exports = { config };

@@ -143,7 +143,23 @@ function toSet(value) {
 
 function normalizeEnvelope(raw) {
   const event = raw && typeof raw === "object" ? raw : {};
-  const callRef = event.callRef || event.call_ref || "";
+  const bridgeCallRef =
+    event.bridgeCallRef ||
+    event.bridge_call_ref ||
+    event.parentCallRef ||
+    event.parent_call_ref ||
+    event.providerCallId ||
+    event.provider_call_id ||
+    event.callRef ||
+    event.call_ref ||
+    "";
+  const runtimeCallRef =
+    event.runtimeCallRef ||
+    event.runtime_call_ref ||
+    event.childCallRef ||
+    event.child_call_ref ||
+    "";
+  const callRef = bridgeCallRef;
   const mediaSessionRef = event.mediaSessionRef || event.media_session_ref || "";
   const eventType = event.eventType || event.event || event.event_type || "voice_event";
   const numberRef =
@@ -168,6 +184,11 @@ function normalizeEnvelope(raw) {
     data: {
       ...event,
       callRef,
+      call_ref: callRef,
+      bridgeCallRef,
+      bridge_call_ref: bridgeCallRef,
+      runtimeCallRef,
+      runtime_call_ref: runtimeCallRef,
       mediaSessionRef,
       numberRef,
       accountId,
@@ -324,6 +345,15 @@ function listRecentFromMemory({
   return filtered;
 }
 
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+  return "";
+}
+
 function rowToEvent(row = {}) {
   const eventType = row.event_type || "voice_event";
   const callRef = row.call_ref || "";
@@ -340,6 +370,40 @@ function rowToEvent(row = {}) {
   const payload =
     row.payload && typeof row.payload === "object" ? row.payload : {};
   const seq = Number(row.id);
+  const routingMode = firstNonEmpty(
+    payload.routingMode,
+    payload.routing_mode,
+    payload.action
+  );
+  const action = firstNonEmpty(payload.action, routingMode);
+  const currentStatus = firstNonEmpty(
+    payload.currentStatus,
+    payload.current_status,
+    payload.status
+  );
+  const status = firstNonEmpty(payload.status, currentStatus);
+  const rawStatus = firstNonEmpty(payload.rawStatus, payload.raw_status);
+  const destination = firstNonEmpty(
+    payload.destination,
+    payload.agentAor,
+    payload.agent_aor,
+    payload.appRef,
+    payload.app_ref
+  );
+  const endReason = firstNonEmpty(payload.endReason, payload.end_reason);
+  const callDirection = firstNonEmpty(
+    payload.callDirection,
+    payload.call_direction
+  );
+  const answeredBy = firstNonEmpty(payload.answeredBy, payload.answered_by);
+  const endedBy = firstNonEmpty(payload.endedBy, payload.ended_by);
+  const terminal =
+    payload.terminal === undefined || payload.terminal === null
+      ? undefined
+      : Boolean(payload.terminal);
+  const operatorAnswered =
+    payload.operatorAnswered ?? payload.operator_answered;
+  const callerAnswered = payload.callerAnswered ?? payload.caller_answered;
 
   return {
     id: String(seq),
@@ -351,6 +415,36 @@ function rowToEvent(row = {}) {
     accountId,
     requestId,
     eventType,
+    routingMode,
+    routing_mode: routingMode,
+    action,
+    currentStatus,
+    current_status: currentStatus,
+    status,
+    rawStatus,
+    raw_status: rawStatus,
+    destination,
+    endReason,
+    end_reason: endReason,
+    callDirection,
+    call_direction: callDirection,
+    answeredBy,
+    answered_by: answeredBy,
+    endedBy,
+    ended_by: endedBy,
+    ...(terminal !== undefined ? { terminal } : {}),
+    ...(operatorAnswered !== undefined
+      ? {
+          operatorAnswered,
+          operator_answered: operatorAnswered
+        }
+      : {}),
+    ...(callerAnswered !== undefined
+      ? {
+          callerAnswered,
+          caller_answered: callerAnswered
+        }
+      : {}),
     source,
     sourceEventId,
     idempotencyKey,

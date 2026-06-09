@@ -3,6 +3,8 @@ const { config } = require("./config");
 const { logger } = require("./logger");
 
 const APP_REF_HEADER = "x-app-ref";
+const ONELINK_MODE_HEADER = "x-onelink-mode";
+const ONELINK_NUMBER_REF_HEADER = "x-onelink-number-ref";
 const ROUTR_DEFAULT_PEER_AOR = "sip:voice@default";
 const SIP_AOR_PATTERN = /^sip:([^@]+)@([^;>\s]+)$/i;
 
@@ -94,6 +96,51 @@ async function assertOperatorAorExists(agentAor) {
   );
 }
 
+function normalizeExtraHeaders(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter(Boolean);
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
+function upsertHeader(headers, name, value) {
+  const normalizedName = String(name || "").trim();
+  if (!normalizedName || value === undefined || value === null || value === "") {
+    return headers;
+  }
+
+  const next = [...headers];
+  const index = next.findIndex(
+    (header) => String(header?.name || "").toLowerCase() === normalizedName.toLowerCase()
+  );
+  const entry = { name: normalizedName, value: String(value) };
+
+  if (index >= 0) {
+    next[index] = { ...next[index], ...entry };
+  } else {
+    next.push(entry);
+  }
+
+  return next;
+}
+
+function buildRuntimeRouteHeaders({ currentHeaders, appRef, mode, numberRef }) {
+  let headers = normalizeExtraHeaders(currentHeaders);
+  headers = upsertHeader(headers, APP_REF_HEADER, appRef);
+  headers = upsertHeader(headers, ONELINK_MODE_HEADER, mode);
+  headers = upsertHeader(headers, ONELINK_NUMBER_REF_HEADER, numberRef);
+  return JSON.stringify(headers);
+}
+
 async function updateNumberRouteInRoutr({
   numberRef,
   mode,
@@ -104,16 +151,28 @@ async function updateNumberRouteInRoutr({
   let aorLink = null;
   let extraHeaders = null;
   const normalizedMode = mode === "agent" || mode === "ai-agent" ? "ai" : mode;
+  const currentRoute = await getNumberRoute(numberRef);
 
   if (normalizedMode === "ai" || normalizedMode === "app") {
     if (!appRef) throw new Error("app_ref is required");
     aorLink = ROUTR_DEFAULT_PEER_AOR;
-    extraHeaders = JSON.stringify([{ name: APP_REF_HEADER, value: appRef }]);
+    extraHeaders = buildRuntimeRouteHeaders({
+      currentHeaders: currentRoute?.extra_headers,
+      appRef,
+      mode: normalizedMode,
+      numberRef
+    });
   } else if (normalizedMode === "operator") {
-    if (!agentAor) throw new Error("agent_aor is required");
-    await assertOperatorAorExists(agentAor);
-    aorLink = agentAor;
-    extraHeaders = null;
+    if (agentAor) await assertOperatorAorExists(agentAor);
+    const runtimeAppRef = appRef || config.defaults.runtimeAppRef;
+    if (!runtimeAppRef) throw new Error("runtime_app_ref is required for operator mode");
+    aorLink = ROUTR_DEFAULT_PEER_AOR;
+    extraHeaders = buildRuntimeRouteHeaders({
+      currentHeaders: currentRoute?.extra_headers,
+      appRef: runtimeAppRef,
+      mode: "operator",
+      numberRef
+    });
   } else if (normalizedMode === "clear") {
     aorLink = null;
     extraHeaders = null;

@@ -22,88 +22,6 @@ services:
       - NODE_ENV=production
       - SERVER_DASHBOARD_SESSION_SECRET
 
-  test-voiceapp:
-    image: fonoster/test-voiceapp-local:1.0.0
-    build:
-      context: /root/fonoster-pack/fonoster-docker/test-voiceapp
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    expose:
-      - 50061
-      - 8081
-    ports:
-      - ${VOICE_AGENT_API_PORT:-8081}:8081
-    environment:
-      - VOICE_AGENT_GRPC_PORT
-      - VOICE_AGENT_API_PORT
-      - VOICE_AGENT_API_TOKEN
-      - VOICE_AGENT_API_CORS_ORIGIN
-      - VOICE_AGENT_API_HEARTBEAT_MS
-      - VOICE_AGENT_API_EVENT_BUFFER_LIMIT
-      - VOICE_AGENT_API_TRANSCRIPT_LIMIT
-      - VOICE_AGENT_SESSION_TTL_MS
-      - VOICE_AGENT_SESSION_HISTORY
-      - VOICE_AGENT_APP_ENABLED
-      - VOICE_AGENT_APP_NAME
-      - VOICE_AGENT_APP_REF
-      - VOICE_AGENT_APP_ENDPOINT
-      - VOICE_AGENT_APP_TYPE
-      - VOICE_AGENT_APP_STT_PRODUCT_REF
-      - VOICE_AGENT_APP_STT_MODEL
-      - VOICE_AGENT_APP_STT_LANGUAGE_CODE
-      - VOICE_AGENT_APP_TTS_PRODUCT_REF
-      - VOICE_AGENT_APP_TTS_VOICE
-      - VOICE_AGENT_MAX_TURNS
-      - VOICE_AGENT_MAX_HISTORY_MESSAGES
-      - VOICE_AGENT_MAX_NO_INPUT_RETRIES
-      - VOICE_AGENT_GATHER_TIMEOUT_MS
-      - VOICE_AGENT_GATHER_MAX_DIGITS
-      - VOICE_AGENT_GATHER_SOURCE
-      - VOICE_AGENT_GREETING_MESSAGE
-      - VOICE_AGENT_FALLBACK_MESSAGE
-      - VOICE_AGENT_NO_INPUT_MESSAGE
-      - VOICE_AGENT_GOODBYE_MESSAGE
-      - VOICE_AGENT_SYSTEM_PROMPT
-      - VOICE_AGENT_TRANSFER_MESSAGE
-      - VOICE_AGENT_LLM_PROVIDER
-      - VOICE_AGENT_LLM_BASE_URL
-      - VOICE_AGENT_LLM_API_KEY
-      - VOICE_AGENT_LLM_MODEL
-      - VOICE_AGENT_LLM_TIMEOUT_MS
-      - VOICE_AGENT_LLM_MAX_TOKENS
-      - VOICE_AGENT_LLM_TEMPERATURE
-      - VOICE_AGENT_LLM_TOP_P
-      - VOICE_AGENT_LLM_RETRY_COUNT
-      - VOICE_AGENT_LLM_RETRY_DELAY_MS
-      - VOICE_AGENT_LLM_DEPLOYMENT
-      - VOICE_AGENT_LLM_API_VERSION
-      - VOICE_AGENT_LLM_HEADERS
-      - VOICE_AGENT_LLM_CUSTOM_BODY
-      - VOICE_AGENT_HTTP_REFERER
-      - VOICE_AGENT_OPENROUTER_REFERER
-      - VOICE_AGENT_OPENROUTER_TITLE
-      - VOICE_AGENT_OPENROUTER_HEADERS
-      - VOICE_AGENT_LLM_STREAMING
-      - VOICE_AGENT_VOICE_MODE
-      - VOICE_AGENT_REALTIME_PROVIDER
-      - VOICE_AGENT_REALTIME_API_KEY
-      - VOICE_AGENT_REALTIME_BASE_URL
-      - VOICE_AGENT_REALTIME_MODEL
-      - VOICE_AGENT_REALTIME_VOICE
-      - VOICE_AGENT_REALTIME_LANGUAGE
-      - VOICE_AGENT_REALTIME_INPUT_RATE
-      - VOICE_AGENT_REALTIME_OUTPUT_RATE
-      - VOICE_AGENT_REALTIME_CALL_RATE
-      - VOICE_AGENT_REALTIME_MAX_DURATION_MS
-      - VOICE_AGENT_REALTIME_GREETING_MODE
-      - VOICE_AGENT_REALTIME_TURN_DETECTION
-      - VOICE_AGENT_REALTIME_INTERRUPTS
-      - VOICE_AGENT_REALTIME_LOG_PROVIDER_EVENTS
-      - VOICE_AGENT_TRANSFER_AGENT_AOR
-      - VOICE_AGENT_LOG_EVENTS
-      - VOICE_AGENT_STOP_ON_FALLBACK
-      - VOICE_AGENT_FALLBACK_MODE
-
   voice-runtime:
     image: fonoster/voice-runtime-local:1.0.0
     build:
@@ -117,6 +35,8 @@ services:
     environment:
       - VOICE_RUNTIME_PORT
       - VOICE_RUNTIME_LOG_LEVEL
+      - VOICE_RUNTIME_APP_REF
+      - ONELINK_BASE_URL
       - VOICE_RUNTIME_BRIDGE_BASE_URL
       - VOICE_RUNTIME_BRIDGE_SHARED_SECRET
       - VOICE_RUNTIME_BRIDGE_TIMEOUT_MS
@@ -126,6 +46,12 @@ services:
       - VOICE_RUNTIME_DEFAULT_FAILURE_MESSAGE
       - VOICE_RUNTIME_UNSUPPORTED_ACTION_MESSAGE
       - VOICE_RUNTIME_TRANSFER_MESSAGE
+      - VOICE_RUNTIME_APP_HANDOFF_STATUS_TIMEOUT_MS
+      - VOICE_RUNTIME_APP_HANDOFF_TERMINAL_TIMEOUT_MS
+      - VOICE_RUNTIME_CONTROL_EVENTS_ENABLED
+      - VOICE_RUNTIME_CONTROL_POLL_MS
+      - VOICE_RUNTIME_RECORDING_BASE_URL
+      - VOICE_RUNTIME_RECORDING_READY_DELAY_MS
 
   telephony-bridge:
     image: fonoster/telephony-bridge-local:1.0.0
@@ -184,7 +110,25 @@ services:
       - TELEPHONY_BRIDGE_DEFAULT_OPERATOR_AGENT_AOR
       - TELEPHONY_BRIDGE_DEFAULT_APP_REF
       - TELEPHONY_BRIDGE_DEFAULT_AI_APP_REF
+      - TELEPHONY_BRIDGE_DEFAULT_AI_MODE
+      - TELEPHONY_BRIDGE_FONOSTER_AI_APP_REF
+      - TELEPHONY_BRIDGE_ONELINK_AI_APP_REF
+      - TELEPHONY_BRIDGE_ONELINK_AI_APP_ENDPOINT
+      - TELEPHONY_BRIDGE_AI_DIRECT_APP_EXECUTOR_ENABLED
+      - TELEPHONY_BRIDGE_AI_CHILD_HANDOFF_FALLBACK_ENABLED
+      - TELEPHONY_BRIDGE_ONELINK_OPERATOR_APP_REF
+      - TELEPHONY_BRIDGE_FALLBACK_AI_APP_REF
       - TELEPHONY_BRIDGE_RUNTIME_APP_REF
+      - ASTERISK_ARI_USERNAME
+      - ASTERISK_ARI_SECRET
+      - TELEPHONY_BRIDGE_ASTERISK_ARI_BASE_URL
+      - TELEPHONY_BRIDGE_ASTERISK_ARI_USERNAME
+      - TELEPHONY_BRIDGE_ASTERISK_ARI_SECRET
+      - TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_NUMBER_REFS
+      - TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_RUNTIME_NUMBER_REF
+      - TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_ENDPOINT
+      - TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_CALLER_ID
+      - TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_INGRESS_NUMBER
 
   apiserver:
     image: fonoster/apiserver-local:0.17.1
@@ -194,6 +138,9 @@ services:
     restart: unless-stopped
     environment:
       - APISERVER_APP_URL
+      - APISERVER_AI_ANSWER_RINGBACK_APP_REFS
+      - APISERVER_AI_ANSWER_RINGBACK_DELAY_MS
+      - APISERVER_AI_ANSWER_RINGBACK_TARGET_TOTAL_MS
       - APISERVER_ASTERISK_ARI_PROXY_URL
       - APISERVER_ASTERISK_ARI_SECRET
       - APISERVER_ASTERISK_ARI_USERNAME
@@ -223,6 +170,15 @@ services:
       - APISERVER_LOGS_LEVEL
       - APISERVER_LOGS_TRANSPORT
       - APISERVER_NATS_URL
+      - APISERVER_ONELINK_DEFAULT_ACCOUNT_ID
+      - APISERVER_ONELINK_AI_RECORDING_APP_REFS
+      - APISERVER_ONELINK_RECORDING_READY_FILE_WAIT_MS
+      - APISERVER_ONELINK_RECORDING_READY_STABLE_INTERVAL_MS
+      - APISERVER_ONELINK_RECORDING_READY_TOKEN
+      - APISERVER_ONELINK_RECORDING_READY_URL
+      - APISERVER_RECORDING_DOWNLOAD_BASE_URL
+      - APISERVER_RECORDING_DOWNLOAD_SECRET
+      - APISERVER_RECORDING_DOWNLOAD_TTL_SECONDS
       - APISERVER_OWNER_EMAIL
       - APISERVER_OWNER_NAME
       - APISERVER_OWNER_PASSWORD
@@ -234,6 +190,17 @@ services:
       - APISERVER_SMTP_SECURE
       - APISERVER_SMTP_SENDER
       - APISERVER_SIGNALING_SERVER
+      - APISERVER_TEST_TOKEN_AGENT_REF
+      - APISERVER_TEST_TOKEN_ALLOWED_METHODS
+      - APISERVER_TEST_TOKEN_AOR
+      - APISERVER_TEST_TOKEN_AOR_LINK
+      - APISERVER_TEST_TOKEN_DISPLAY_NAME
+      - APISERVER_TEST_TOKEN_DOMAIN
+      - APISERVER_TEST_TOKEN_DOMAIN_REF
+      - APISERVER_TEST_TOKEN_MAX_CONTACTS
+      - APISERVER_TEST_TOKEN_SIGNALING_SERVER
+      - APISERVER_TEST_TOKEN_TARGET_AOR
+      - APISERVER_TEST_TOKEN_USERNAME
       - APISERVER_TWILIO_ACCOUNT_SID
       - APISERVER_TWILIO_AUTH_TOKEN
       - APISERVER_TWILIO_PHONE_NUMBER
@@ -242,6 +209,7 @@ services:
     volumes:
       - ./config/keys:/opt/fonoster/keys:ro
       - ./config/integrations.json:/opt/fonoster/integrations.json:ro
+      - ./recordings/fonoster-monitor:/opt/fonoster/recordings:rw
 
   autopilot:
     image: fonoster/autopilot:0.17.1
@@ -301,6 +269,11 @@ services:
       start_period: 15s
     volumes:
       - ./config/keys/public.pem:/etc/routr/keys/public.pem
+      - ./config/routr-certs:/etc/routr/certs
+      - ./config/routr-patches/connect/service.js:/service/node_modules/@routr/connect/dist/service.js:ro
+      - ./config/routr-patches/connect/router.js:/service/node_modules/@routr/connect/dist/router.js:ro
+      - ./config/routr-patches/connect/handlers/register.js:/service/node_modules/@routr/connect/dist/handlers/register.js:ro
+      - ./config/routr-patches/location/location.js:/service/node_modules/@routr/location/dist/location.js:ro
 
   # RTPEngine uses a range of ports to handle RTP traffic. Because exposing a large range of ports
   # is not possible in Docker, we need to use network_mode: host.
@@ -331,16 +304,23 @@ services:
       ARI_USERNAME: ${ASTERISK_ARI_USERNAME}
       CODECS: ${ASTERISK_CODECS}
       DTMF_MODE: ${ASTERISK_DTMF_MODE}
-      RTP_PORT_END: ${ASTERISK_RTP_PORT_END}
-      RTP_PORT_START: ${ASTERISK_RTP_PORT_START}
+      RTP_PORT_END: "21020"
+      RTP_PORT_START: "21000"
       SIPPROXY_HOST: ${ASTERISK_SIPPROXY_HOST}
       SIPPROXY_PORT: ${ASTERISK_SIPPROXY_PORT}
       SIPPROXY_SECRET: ${ASTERISK_SIPPROXY_SECRET}
       SIPPROXY_USERNAME: ${ASTERISK_SIPPROXY_USERNAME}
     expose:
       - 6060
+    ports:
+      - "6070:6070/udp"
+      - "21000-21020:21000-21020/udp"
     volumes:
+      - ./asterisk/run-sipuni.sh:/run.sh:ro
       - ./asterisk-sounds/en/custom:/var/lib/asterisk/sounds/en/custom:ro
+      - ./asterisk/config/extensions.conf:/etc/asterisk/extensions.conf:ro
+      - ./asterisk/config/pjsip_sipuni.conf:/etc/asterisk/pjsip_sipuni.conf:ro
+      - ./recordings/fonoster-monitor:/var/spool/asterisk/monitor
 
   postgres:
     image: postgres:16.10-alpine3.22

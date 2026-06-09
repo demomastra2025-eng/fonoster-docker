@@ -16,6 +16,14 @@ function asList(value, fallback = []) {
     .filter(Boolean);
 }
 
+function requiredEnv(name) {
+  const value = process.env[name];
+  if (value === undefined || value === null || value === "") {
+    throw new Error(`${name} is required`);
+  }
+  return value;
+}
+
 const config = {
   port: asNumber(process.env.TELEPHONY_BRIDGE_PORT, 3100),
   logLevel: process.env.TELEPHONY_BRIDGE_LOG_LEVEL || "info",
@@ -60,16 +68,10 @@ const config = {
       asBoolean(process.env.TELEPHONY_BRIDGE_STREAM_PERSIST_EVENTS, true)
   },
   fonoster: {
-    accessKeyId:
-      process.env.TELEPHONY_BRIDGE_FONOSTER_ACCESS_KEY_ID ||
-      "WO00000000000000000000000000000000",
-    endpoint:
-      process.env.TELEPHONY_BRIDGE_FONOSTER_ENDPOINT ||
-      "cloud.vconsult.kz:443",
-    username:
-      process.env.TELEPHONY_BRIDGE_FONOSTER_USERNAME || "admin@vconsult.kz",
-    password:
-      process.env.TELEPHONY_BRIDGE_FONOSTER_PASSWORD || "150895aA!!",
+    accessKeyId: requiredEnv("TELEPHONY_BRIDGE_FONOSTER_ACCESS_KEY_ID"),
+    endpoint: requiredEnv("TELEPHONY_BRIDGE_FONOSTER_ENDPOINT"),
+    username: requiredEnv("TELEPHONY_BRIDGE_FONOSTER_USERNAME"),
+    password: requiredEnv("TELEPHONY_BRIDGE_FONOSTER_PASSWORD"),
     allowInsecure: asBoolean(
       process.env.TELEPHONY_BRIDGE_FONOSTER_ALLOW_INSECURE,
       false
@@ -80,6 +82,35 @@ const config = {
       process.env.TELEPHONY_BRIDGE_ROUTR_DATABASE_URL ||
       process.env.ROUTR_DATABASE_URL ||
       ""
+  },
+  asterisk: {
+    ariBaseUrl:
+      process.env.TELEPHONY_BRIDGE_ASTERISK_ARI_BASE_URL ||
+      "http://asterisk:8088/ari",
+    ariUsername:
+      process.env.TELEPHONY_BRIDGE_ASTERISK_ARI_USERNAME ||
+      process.env.ASTERISK_ARI_USERNAME ||
+      "",
+    ariSecret:
+      process.env.TELEPHONY_BRIDGE_ASTERISK_ARI_SECRET ||
+      process.env.ASTERISK_ARI_SECRET ||
+      "",
+    sipuniOutboundNumberRefs: asList(
+      process.env.TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_NUMBER_REFS,
+      ["sipuni-internal-asterisk-056124100014"]
+    ),
+    sipuniOutboundRuntimeNumberRef:
+      process.env.TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_RUNTIME_NUMBER_REF ||
+      "",
+    sipuniOutboundEndpoint:
+      process.env.TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_ENDPOINT ||
+      "sipuni-onelink-endpoint",
+    sipuniOutboundCallerId:
+      process.env.TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_CALLER_ID ||
+      "207",
+    sipuniOutboundIngressNumber:
+      process.env.TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_INGRESS_NUMBER ||
+      "056124100014"
   },
   onelink: {
     baseUrl:
@@ -112,6 +143,12 @@ const config = {
       30000
     )
   },
+  outbound: {
+    statusNotFoundGraceMs: asNumber(
+      process.env.TELEPHONY_BRIDGE_OUTBOUND_STATUS_NOT_FOUND_GRACE_MS,
+      15000
+    )
+  },
   defaults: {
     inboundAction:
       process.env.TELEPHONY_BRIDGE_DEFAULT_INBOUND_ACTION || "reject",
@@ -122,7 +159,36 @@ const config = {
       process.env.TELEPHONY_BRIDGE_DEFAULT_OPERATOR_AGENT_AOR || "",
     appRef: process.env.TELEPHONY_BRIDGE_DEFAULT_APP_REF || "",
     aiAppRef: process.env.TELEPHONY_BRIDGE_DEFAULT_AI_APP_REF || "",
-    runtimeAppRef: process.env.TELEPHONY_BRIDGE_RUNTIME_APP_REF || "",
+    aiMode: process.env.TELEPHONY_BRIDGE_DEFAULT_AI_MODE || "fonoster_managed",
+    fonosterAiAppRef:
+      process.env.TELEPHONY_BRIDGE_FONOSTER_AI_APP_REF ||
+      process.env.TELEPHONY_BRIDGE_DEFAULT_AI_APP_REF ||
+      "",
+    onelinkAiAppRef: process.env.TELEPHONY_BRIDGE_ONELINK_AI_APP_REF || "",
+    onelinkAiAppEndpoint:
+      process.env.TELEPHONY_BRIDGE_ONELINK_AI_APP_ENDPOINT ||
+      process.env.ONELINK_AI_VOICE_APP_ENDPOINT ||
+      "",
+    onelinkOperatorAppRef:
+      process.env.TELEPHONY_BRIDGE_ONELINK_OPERATOR_APP_REF || "",
+    fallbackAiAppRef:
+      process.env.TELEPHONY_BRIDGE_FALLBACK_AI_APP_REF ||
+      process.env.TELEPHONY_BRIDGE_DEFAULT_AI_APP_REF ||
+      "",
+    runtimeAppRef:
+      process.env.TELEPHONY_BRIDGE_RUNTIME_APP_REF ||
+      process.env.VOICE_RUNTIME_APP_REF ||
+      "",
+    aiDirectAppExecutorEnabled: asBoolean(
+      process.env.TELEPHONY_BRIDGE_AI_DIRECT_APP_EXECUTOR_ENABLED ||
+        process.env.AI_DIRECT_APP_EXECUTOR_ENABLED,
+      false
+    ),
+    aiChildHandoffFallbackEnabled: asBoolean(
+      process.env.TELEPHONY_BRIDGE_AI_CHILD_HANDOFF_FALLBACK_ENABLED ||
+        process.env.AI_CHILD_HANDOFF_FALLBACK_ENABLED,
+      true
+    ),
     nativeRouteEnabled: asBoolean(
       process.env.TELEPHONY_BRIDGE_NATIVE_ROUTE_ENABLED,
       true
