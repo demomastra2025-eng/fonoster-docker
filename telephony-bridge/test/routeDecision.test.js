@@ -161,7 +161,7 @@ test('outbound runtime callback uses operator metadata without inbound route loo
   assert.equal(decision.operatorExecutionMode, 'direct_bridge');
 });
 
-test('operator-first outbound metadata is ignored unless explicitly enabled', () => {
+test('operator-first outbound metadata executes runtime handoff by default', () => {
   const decision = buildOutboundRuntimeDecision({
     callRef: 'outbound-call-operator-first',
     appRef: 'runtime-router-app',
@@ -169,32 +169,6 @@ test('operator-first outbound metadata is ignored unless explicitly enabled', ()
     ingressNumber: '9098',
     metadata: {
       routing_mode: 'operator',
-      operator_first_outbound: true,
-      outbound_target_number: '+77066318623',
-      agent_aor: 'sip:1001@operator.example.test',
-      fonoster_agent_ref: '1001'
-    }
-  });
-
-  assert.equal(decision.action, 'operator');
-  assert.equal(decision.routingMode, 'operator');
-  assert.equal(decision.agentAor, 'sip:1001@operator.example.test');
-  assert.equal(decision.answer, false);
-  assert.equal(decision.answerBeforeDial, false);
-  assert.equal(decision.reason, 'outbound_runtime_route');
-  assert.equal(decision.source, 'local_outbound_runtime');
-  assert.equal(decision.operatorExecutionMode, 'direct_bridge');
-});
-
-test('operator-first outbound runtime callback requires explicit opt-in', () => {
-  const decision = buildOutboundRuntimeDecision({
-    callRef: 'outbound-call-operator-first-enabled',
-    appRef: 'runtime-router-app',
-    direction: 'outbound',
-    ingressNumber: '9098',
-    metadata: {
-      routing_mode: 'operator',
-      allow_operator_first_outbound: true,
       operator_first_outbound: true,
       outbound_target_number: '+77066318623',
       agent_aor: 'sip:1001@operator.example.test',
@@ -214,6 +188,32 @@ test('operator-first outbound runtime callback requires explicit opt-in', () => 
   assert.equal(decision.source, 'local_outbound_runtime');
   assert.equal(decision.operatorExecutionMode, 'runtime_handoff');
   assert.equal(decision.operatorFirstClassProductionPath, true);
+});
+
+test('operator-first outbound runtime callback honors explicit disable', () => {
+  const decision = buildOutboundRuntimeDecision({
+    callRef: 'outbound-call-operator-first-disabled',
+    appRef: 'runtime-router-app',
+    direction: 'outbound',
+    ingressNumber: '9098',
+    metadata: {
+      routing_mode: 'operator',
+      disable_operator_first_outbound: true,
+      operator_first_outbound: true,
+      outbound_target_number: '+77066318623',
+      agent_aor: 'sip:1001@operator.example.test',
+      fonoster_agent_ref: '1001'
+    }
+  });
+
+  assert.equal(decision.action, 'operator');
+  assert.equal(decision.routingMode, 'operator');
+  assert.equal(decision.agentAor, 'sip:1001@operator.example.test');
+  assert.equal(decision.answer, false);
+  assert.equal(decision.answerBeforeDial, false);
+  assert.equal(decision.reason, 'outbound_runtime_route');
+  assert.equal(decision.source, 'local_outbound_runtime');
+  assert.equal(decision.operatorExecutionMode, 'direct_bridge');
 });
 
 test('outbound runtime callback infers operator from Fonoster agent hint when mode is empty app fallback', () => {

@@ -854,14 +854,14 @@ function truthyMetadataFlag(value) {
 }
 
 function isOperatorFirstOutbound(inbound = {}, metadata = outboundRuntimeMetadata(inbound)) {
-  const explicitlyAllowed = truthyMetadataFlag(firstNonEmpty(
-    inbound.allowOperatorFirstOutbound,
-    inbound.allow_operator_first_outbound,
-    metadata.allowOperatorFirstOutbound,
-    metadata.allow_operator_first_outbound,
-    process.env.TELEPHONY_BRIDGE_OPERATOR_FIRST_OUTBOUND_ENABLED
+  const explicitlyDisabled = truthyMetadataFlag(firstNonEmpty(
+    inbound.disableOperatorFirstOutbound,
+    inbound.disable_operator_first_outbound,
+    metadata.disableOperatorFirstOutbound,
+    metadata.disable_operator_first_outbound,
+    process.env.TELEPHONY_BRIDGE_OPERATOR_FIRST_OUTBOUND_DISABLED
   ));
-  if (!explicitlyAllowed) return false;
+  if (explicitlyDisabled) return false;
 
   return truthyMetadataFlag(firstNonEmpty(
     inbound.operatorFirstOutbound,

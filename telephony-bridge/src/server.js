@@ -2573,11 +2573,22 @@ function isSipuniAsteriskOutbound(payload = {}, metadata = {}) {
 }
 
 function operatorFirstOutboundEnabled(metadata = {}) {
-  return optInFlagEnabled(
+  if (
+    optInFlagEnabled(
+      metadata.disable_operator_first_outbound,
+      metadata.disableOperatorFirstOutbound,
+      process.env.TELEPHONY_BRIDGE_OPERATOR_FIRST_OUTBOUND_DISABLED
+    )
+  ) {
+    return false;
+  }
+
+  const explicitAllow = normalizeOptionalBoolean(firstNonEmpty(
     metadata.allow_operator_first_outbound,
     metadata.allowOperatorFirstOutbound,
     process.env.TELEPHONY_BRIDGE_OPERATOR_FIRST_OUTBOUND_ENABLED
-  );
+  ));
+  return explicitAllow !== false;
 }
 
 function sipuniProviderFirstMetadata(payload = {}, metadata = {}) {
@@ -4230,8 +4241,6 @@ async function buildOutboundCallResponse(req) {
   }
   const payloadMetadata = plainObject(payload.metadata);
   const sipuniRuntimeOutbound = isSipuniAsteriskOutbound(payload, payloadMetadata);
-  const sipuniProviderFirstOutbound =
-    !sipuniRuntimeOutbound && isSipuniOutboundNumberRef(payload, payloadMetadata);
   const callPayload = sipuniRuntimeOutbound
     ? sipuniRuntimeOutboundPayload(payload, payloadMetadata)
     : payload;
@@ -4294,18 +4303,24 @@ async function buildOutboundCallResponse(req) {
     !sipuniRuntimeOutbound &&
     routingMode === "operator" &&
     Boolean(operatorAgentAor);
+  const sipuniProviderFirstOutbound =
+    !sipuniRuntimeOutbound &&
+    !operatorFirstOutbound &&
+    isSipuniOutboundNumberRef(payload, payloadMetadata);
   const providerCallTarget = operatorFirstOutbound ? operatorAgentAor : payload.to;
   const providerPath = sipuniRuntimeOutbound
     ? "asterisk_sipuni"
-    : sipuniProviderFirstOutbound
-      ? "fonoster_sipuni_provider_first"
     : operatorFirstOutbound
       ? "fonoster_operator_first"
+      : sipuniProviderFirstOutbound
+        ? "fonoster_sipuni_provider_first"
       : "fonoster_direct";
   const providerFirstMetadata = sipuniProviderFirstMetadata(payload, payloadMetadata);
   const createCallMetadata = operatorFirstOutbound
     ? {
         ...outboundMetadata,
+        allow_operator_first_outbound: true,
+        allowOperatorFirstOutbound: true,
         operator_first_outbound: true,
         operatorFirstOutbound: true,
         outbound_target_number: payload.to,
