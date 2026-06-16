@@ -325,8 +325,7 @@ function scheduleRecordingReadyEvent({
     decision.recordingImportContract || decision.recording_import_contract || "";
   if (
     recordingOwnership === "onelink_runtime" ||
-    recordingImportContract === "runtime_owned_no_fonoster_import" ||
-    recordingImportContract === "fonoster_pull_recording_ready_required"
+    recordingImportContract === "runtime_owned_no_fonoster_import"
   ) {
     return;
   }

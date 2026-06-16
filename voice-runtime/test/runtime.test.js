@@ -210,6 +210,38 @@ test("operator app handoff emits ownership metadata on decision_received", async
   );
 });
 
+test("operator direct bridge emits recording_ready for Fonoster pull contract", async () => {
+  const voice = createVoice();
+  const inbound = createInbound();
+  const bridge = createBridge({
+    action: "operator",
+    routingMode: "operator",
+    agentAor: "sip:1001@operator.cloud.vconsult.kz",
+    recordingOwnership: "explicit_direct_bridge_contract_required",
+    recordingImportContract: "fonoster_pull_recording_ready_required"
+  });
+  const run = handleIncomingCall(inbound, voice, { bridge });
+
+  await delay(5);
+  voice.voice.emit("data", {
+    dialStatus: {
+      status: "CANCEL",
+      runtimeCallRef: "runtime-child",
+      streamRef: "stream-ref",
+      closeSource: "test.cancel"
+    }
+  });
+  await run;
+  await delay(5);
+
+  const recordingReady = bridge.events.find((event) => event.eventType === "recording_ready");
+  assert.ok(recordingReady);
+  assert.equal(recordingReady.callRef, inbound.callRef);
+  assert.equal(recordingReady.mediaSessionRef, inbound.mediaSessionRef);
+  assert.equal(recordingReady.recording_ref, `rec_${inbound.callRef}_${inbound.appRef}_${inbound.mediaSessionRef}`);
+  assert.equal(recordingReady.recording_url, `https://cloud.vconsult.kz/recordings/${encodeURIComponent(`${inbound.appRef}_${inbound.mediaSessionRef}.wav`)}`);
+});
+
 test("operator route does not dial after caller hangs up before route decision", async () => {
   const voice = createVoice();
   const bridge = createBridge({
