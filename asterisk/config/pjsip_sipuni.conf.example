@@ -1,0 +1,61 @@
+; OneLink/Fonoster isolated Sipuni device transport/template.
+; Copy to pjsip_sipuni.conf on the production host and fill SIP credentials locally.
+; Do NOT commit the real pjsip_sipuni.conf.
+
+[transport-sipuni-udp]
+type = transport
+protocol = udp
+bind = 0.0.0.0:6070
+external_signaling_address = <PUBLIC_IP>
+external_signaling_port = 6070
+external_media_address = <PUBLIC_IP>
+local_net = 172.16.0.0/12
+local_net = 10.0.0.0/8
+local_net = 192.168.0.0/16
+
+[sipuni-onelink-auth]
+type = auth
+auth_type = userpass
+username = <SIPUNI_ACCOUNT_NUMBER>
+password = <LOCAL_SECRET>
+
+[sipuni-onelink-aor]
+type = aor
+contact = sip:ats01.kz.sipuni.com:5060
+qualify_frequency = 60
+qualify_timeout = 3.0
+
+[sipuni-onelink-endpoint]
+type = endpoint
+transport = transport-sipuni-udp
+context = from-sipuni-onelink
+disallow = all
+allow = alaw,ulaw,g722
+outbound_auth = sipuni-onelink-auth
+aors = sipuni-onelink-aor
+from_user = <SIPUNI_ACCOUNT_NUMBER>
+from_domain = ats01.kz.sipuni.com
+timers = no
+direct_media = no
+rtp_symmetric = yes
+force_rport = yes
+rewrite_contact = yes
+trust_id_inbound = yes
+trust_id_outbound = yes
+send_pai = yes
+send_rpid = yes
+dtmf_mode = rfc4733
+
+[sipuni-onelink-registration]
+type = registration
+transport = transport-sipuni-udp
+outbound_auth = sipuni-onelink-auth
+server_uri = sip:ats01.kz.sipuni.com:5060
+client_uri = sip:<SIPUNI_ACCOUNT_NUMBER>@ats01.kz.sipuni.com
+contact_user = <SIPUNI_ACCOUNT_NUMBER>
+endpoint = sipuni-onelink-endpoint
+line = yes
+retry_interval = 10
+forbidden_retry_interval = 60
+expiration = 300
+max_retries = 1000000

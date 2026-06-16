@@ -180,7 +180,7 @@ function buildConfig(options = {}) {
       aor: firstValue(options.agentAor, options["agent-aor"], getEnv("VOICE_RUNTIME_OPERATOR_AGENT_AOR"), getEnv("TELEPHONY_BRIDGE_DEFAULT_OPERATOR_AGENT_AOR")),
       privacy: firstValue(options.agentPrivacy, options["agent-privacy"], getEnv("VOICE_RUNTIME_OPERATOR_AGENT_PRIVACY"), "NONE"),
       enabled: parseBool(firstValue(options.agentEnabled, options["agent-enabled"], getEnv("VOICE_RUNTIME_OPERATOR_AGENT_ENABLED")), true),
-      maxContacts: parseNumber(firstValue(options.agentMaxContacts, options["agent-max-contacts"], getEnv("VOICE_RUNTIME_OPERATOR_AGENT_MAX_CONTACTS")), 1),
+      maxContacts: parseNumber(firstValue(options.agentMaxContacts, options["agent-max-contacts"], getEnv("VOICE_RUNTIME_OPERATOR_AGENT_MAX_CONTACTS")), -1),
       expires: parseNumber(firstValue(options.agentExpires, options["agent-expires"], getEnv("VOICE_RUNTIME_OPERATOR_AGENT_EXPIRES")), 3600),
       domainRef: firstValue(options.agentDomainRef, options["agent-domain-ref"], getEnv("VOICE_RUNTIME_OPERATOR_AGENT_DOMAIN_REF")),
       credentialsRef: firstValue(options.agentCredentialsRef, options["agent-credentials-ref"], getEnv("VOICE_RUNTIME_OPERATOR_AGENT_CREDENTIALS_REF"))

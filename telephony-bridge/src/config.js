@@ -77,6 +77,30 @@ const config = {
       false
     )
   },
+  webphone: {
+    identityPrivateKeyPath:
+      process.env.TELEPHONY_BRIDGE_IDENTITY_PRIVATE_KEY_PATH ||
+      process.env.IDENTITY_PRIVATE_KEY_PATH ||
+      "/opt/fonoster/keys/private.pem",
+    signalingServer:
+      process.env.TELEPHONY_BRIDGE_WEBPHONE_SIGNALING_SERVER ||
+      process.env.APISERVER_SIGNALING_SERVER ||
+      process.env.APISERVER_TEST_TOKEN_SIGNALING_SERVER ||
+      "",
+    defaultDomainUri:
+      process.env.TELEPHONY_BRIDGE_OPERATOR_DOMAIN ||
+      process.env.TELEPHONY_BRIDGE_OPERATOR_DOMAIN_URI ||
+      process.env.APISERVER_TEST_TOKEN_DOMAIN ||
+      "operator.cloud.vconsult.kz",
+    defaultDomainRef:
+      process.env.TELEPHONY_BRIDGE_OPERATOR_DOMAIN_REF ||
+      process.env.APISERVER_TEST_TOKEN_DOMAIN_REF ||
+      "",
+    tokenExpiresInSeconds: asNumber(
+      process.env.TELEPHONY_BRIDGE_WEBPHONE_TOKEN_EXPIRES_IN_SECONDS,
+      3600
+    )
+  },
   routr: {
     databaseUrl:
       process.env.TELEPHONY_BRIDGE_ROUTR_DATABASE_URL ||

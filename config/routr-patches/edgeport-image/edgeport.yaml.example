@@ -1,0 +1,38 @@
+kind: EdgePort
+apiVersion: v2beta1
+ref: default
+metadata:
+  region: default
+spec:
+  unknownMethodAction: Discard
+  processor:
+    addr: localhost:51901
+  securityContext:
+    client:
+      protocols:
+        - TLSv1.2
+        - TLSv1.3
+      authType: DisabledAll
+    keyStorePassword: ${PKCS12_PASSWORD}
+    trustStorePassword: ${PKCS12_PASSWORD}
+    keyStore: "/etc/routr/certs/signaling.p12"
+    trustStore: "/etc/routr/certs/signaling.p12"
+    keyStoreType: pkcs12
+  methods:
+    - REGISTER
+    - MESSAGE
+    - INVITE
+    - ACK
+    - BYE
+    - CANCEL
+  transport:
+    - protocol: tcp
+      port: 5060
+    - protocol: udp
+      port: 5060
+    - protocol: tls
+      port: 5061
+    - protocol: ws
+      port: 5062
+    - protocol: wss
+      port: 5063

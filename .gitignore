@@ -3,3 +3,19 @@
 config/keys/*.pem
 node_modules/
 **/node_modules/
+# OneLink/Fonoster production runtime artifacts (never commit)
+*.bak
+*.bak-*
+*.bak.*
+*.codex-backup-*
+backup-*.sql
+logs/
+recordings/
+# Local certificates / private runtime secrets
+config/routr-certs/
+config/routr-patches/edgeport-image/edgeport.yaml
+asterisk/config/pjsip_sipuni.conf
+asterisk/config/sipuni_gateways.json
+asterisk/config/pjsip.conf
+asterisk/config/pjsip_wizard.conf
+asterisk/config/rtp.conf

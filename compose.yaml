@@ -75,6 +75,11 @@ services:
       - TELEPHONY_BRIDGE_FONOSTER_USERNAME
       - TELEPHONY_BRIDGE_FONOSTER_PASSWORD
       - TELEPHONY_BRIDGE_FONOSTER_ALLOW_INSECURE
+      - TELEPHONY_BRIDGE_WEBPHONE_SIGNALING_SERVER
+      - TELEPHONY_BRIDGE_IDENTITY_PRIVATE_KEY_PATH
+      - TELEPHONY_BRIDGE_OPERATOR_DOMAIN
+      - TELEPHONY_BRIDGE_OPERATOR_DOMAIN_REF
+      - TELEPHONY_BRIDGE_WEBPHONE_TOKEN_EXPIRES_IN_SECONDS
       - TELEPHONY_BRIDGE_ROUTR_DATABASE_URL
       - TELEPHONY_BRIDGE_ONELINK_BASE_URL
       - TELEPHONY_BRIDGE_ONELINK_ACCESS_TOKEN
@@ -126,9 +131,14 @@ services:
       - TELEPHONY_BRIDGE_ASTERISK_ARI_SECRET
       - TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_NUMBER_REFS
       - TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_RUNTIME_NUMBER_REF
+      - TELEPHONY_BRIDGE_SIPUNI_DIRECT_ASTERISK_OUTBOUND_ENABLED
       - TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_ENDPOINT
       - TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_CALLER_ID
       - TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_INGRESS_NUMBER
+      - TELEPHONY_BRIDGE_ASTERISK_CONFIG_DIR
+    volumes:
+      - ./asterisk/config:/fonoster-asterisk-config
+      - ./config/keys:/opt/fonoster/keys:ro
 
   apiserver:
     image: fonoster/apiserver-local:0.17.1
@@ -234,7 +244,10 @@ services:
       - ./config/integrations.json:/opt/fonoster/integrations.json:ro
 
   routr:
-    image: fonoster/routr-one:2.13.22
+    image: fonoster/routr-one-onelink:2.13.22-tls12-13
+    build:
+      context: /root/fonoster-pack/fonoster-docker/config/routr-patches/edgeport-image
+      dockerfile: Dockerfile
     restart: unless-stopped
     labels:
       - "autoheal=true"

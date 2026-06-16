@@ -96,6 +96,11 @@ It contains two documentation tracks:
   - final compact handoff for the current Fonoster-side work
   - what is done, what is next, and how provider replacement works
 
+- [`20-ai-voice-operator-first-class-rollout-plan.md`](./20-ai-voice-operator-first-class-rollout-plan.md)
+  - agreed phased AI Voice rollout plan
+  - operator mode as a first-class production path
+  - rollout gating, smoke matrix, and recording/transcript ownership checks
+
 - [`_templates/new-doc-template.md`](./_templates/new-doc-template.md)
   - template for adding new documents without breaking structure
 

@@ -34,10 +34,10 @@ Main running services at the time of documentation:
 
 - Twilio test number: `+18623964686`
 - Twilio trunk name: `craftyvoice`
-- Fonoster test application:
-  - name: `Twilio Test App`
-  - ref: `74fec1f6-48e8-436c-8147-9176a5da4fa4`
-  - current endpoint: `welcome.demo.fonoster.local`
+- Fonoster AI application:
+  - name: `OneLink AI Voice`
+  - ref: `f2498e07-2bb5-45a1-8c8c-6fecdb4c791a`
+  - current endpoint: `app.one-link.kz:50061`
 - Fonoster runtime application:
   - name: `Onelink Voice Runtime`
   - ref: `96fc259c-6bcd-4cbf-bb7d-d2c51f248934`
@@ -58,7 +58,7 @@ Main running services at the time of documentation:
 - Voice runtime is running on internal service `voice-runtime:50062`
 - Twilio inbound calls reach Fonoster ingress
 - the test DID is currently routed to `Onelink Voice Runtime`
-- bridge fallback currently returns `ai -> appRef(Twilio Test App)` when Onelink is not configured
+- bridge fallback currently returns `ai -> appRef(OneLink AI Voice)` when fallback routing is needed
 - the local Fonoster-side runtime path now supports bare `appRef` execution through the patched local `apiserver`
 - read-only SDK smoke tests pass
 - telephony-bridge endpoints `healthz`, `telephony/calls`, `telephony/webphone/token`, and `internal/voice/inbound/route` pass locally
@@ -82,8 +82,8 @@ Related files:
 ## Important Notes
 
 - The public test DID is now routed to the runtime app `96fc259c-6bcd-4cbf-bb7d-d2c51f248934`.
-- Because Onelink is not configured yet, the bridge currently falls back to `ai` with `appRef=74fec1f6-48e8-436c-8147-9176a5da4fa4`, which points to the built-in welcome demo app.
+- Bridge fallback is configured to use `ai` with `appRef=f2498e07-2bb5-45a1-8c8c-6fecdb4c791a`, which points to the Onelink-hosted AI voice app.
 - A dedicated runtime app already exists and points to `voice-runtime:50062`.
 - `apiserver` is now built locally from [`/root/fonoster`](/root/fonoster), not only pulled from the public registry, because the local deployment now includes the `app:<appRef>` internal handoff patch.
-- The experimental external app in [`/root/fonoster-docker/test-voiceapp`](/root/fonoster-docker/test-voiceapp) is not the active production call path.
+- The local Gemini test app is not part of the production compose path.
 - Secrets are intentionally not copied into this document.

@@ -16,7 +16,7 @@ This file describes suggested contracts for the first version of the bridge API.
 {
   "from_number_ref": "d451bbe2-53d8-4458-bd0e-d811d85f57e0",
   "to": "+15551234567",
-  "app_ref": "7b9f0bbd-eac4-46e4-80a8-7b3d5341c9f8",
+  "app_ref": "f2498e07-2bb5-45a1-8c8c-6fecdb4c791a",
   "conversation_id": 123,
   "contact_id": 456
 }
@@ -79,7 +79,7 @@ Delivery guarantees:
 Current local refs used by the bridge:
 
 - Runtime app: `96fc259c-6bcd-4cbf-bb7d-d2c51f248934`
-- Gemini Live AI app: `7b9f0bbd-eac4-46e4-80a8-7b3d5341c9f8`
+- Onelink-hosted AI app: `f2498e07-2bb5-45a1-8c8c-6fecdb4c791a`
 - Smoke-test operator: `sip:1001@operator.cloud.vconsult.kz`
 
 Route the DID into the Onelink-controlled voice runtime:
@@ -91,12 +91,12 @@ Route the DID into the Onelink-controlled voice runtime:
 }
 ```
 
-Route the DID directly to the current Gemini Live AI app:
+Route the DID directly to the current Onelink-hosted AI app:
 
 ```json
 {
   "mode": "ai",
-  "app_ref": "7b9f0bbd-eac4-46e4-80a8-7b3d5341c9f8"
+  "app_ref": "f2498e07-2bb5-45a1-8c8c-6fecdb4c791a"
 }
 ```
 
@@ -173,14 +173,14 @@ Response examples:
 ```json
 {
   "action": "ai",
-  "app_ref": "7b9f0bbd-eac4-46e4-80a8-7b3d5341c9f8"
+  "app_ref": "f2498e07-2bb5-45a1-8c8c-6fecdb4c791a"
 }
 ```
 
 ```json
 {
   "action": "app",
-  "app_ref": "74fec1f6-48e8-436c-8147-9176a5da4fa4"
+  "app_ref": "f2498e07-2bb5-45a1-8c8c-6fecdb4c791a"
 }
 ```
 
@@ -188,8 +188,8 @@ Decision rules:
 
 - `reject` may include `message`.
 - `operator` must include `agent_aor`; for the current smoke setup use `sip:1001@operator.cloud.vconsult.kz`.
-- `ai` must include the current Gemini Live app ref `7b9f0bbd-eac4-46e4-80a8-7b3d5341c9f8`.
-- `app` must include a non-runtime executable app ref. `74fec1f6-48e8-436c-8147-9176a5da4fa4` is only the older demo smoke-test app.
+- `ai` must include the current Onelink AI app ref `f2498e07-2bb5-45a1-8c8c-6fecdb4c791a`.
+- `app` must include a non-runtime executable app ref. For the current AI voice flow, use `f2498e07-2bb5-45a1-8c8c-6fecdb4c791a`.
 - Do not return runtime app ref `96fc259c-6bcd-4cbf-bb7d-d2c51f248934` for live `action=app` or `action=ai`.
 
 ### Call-Time Event

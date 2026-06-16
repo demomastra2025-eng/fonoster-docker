@@ -1,4 +1,6 @@
 const express = require("express");
+const fs = require("node:fs");
+const jwt = require("jsonwebtoken");
 const { randomUUID } = require("node:crypto");
 const WebSocket = require("ws");
 const { config } = require("./config");
@@ -14,6 +16,7 @@ const {
   getNumberRoute,
   updateNumberRouteInRoutr
 } = require("./routrDb");
+const sipuniGateway = require("./sipuniGateway");
 const {
   publishVoiceEvent,
   subscribeVoiceEvents,
@@ -159,6 +162,224 @@ function buildWebphoneTokenDiagnostics(tokenResponse, expectedAor) {
       inviteAllowed
     }
   };
+}
+
+let webphoneIdentityPrivateKey = null;
+
+function compactBridgeObject(value) {
+  return Object.fromEntries(
+    Object.entries(value || {}).filter(([, entry]) => entry !== undefined && entry !== null && entry !== "")
+  );
+}
+
+function readWebphoneIdentityPrivateKey() {
+  const keyPath = config.webphone?.identityPrivateKeyPath || "";
+  if (!keyPath) {
+    throw new Error("TELEPHONY_BRIDGE_IDENTITY_PRIVATE_KEY_PATH is not configured");
+  }
+
+  if (!webphoneIdentityPrivateKey) {
+    webphoneIdentityPrivateKey = fs.readFileSync(keyPath, "utf8");
+  }
+
+  return webphoneIdentityPrivateKey;
+}
+
+function sipAorDomain(value) {
+  const normalized = String(value || "").trim().replace(/^sip:/i, "");
+  return normalized.split("@")[1]?.split(";")[0]?.trim().toLowerCase() || "";
+}
+
+function responseItems(response) {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.items)) return response.items;
+  return [];
+}
+
+function domainIdentity(value = {}) {
+  const domain = value.domain && typeof value.domain === "object" ? value.domain : {};
+  const domainString = typeof value.domain === "string" ? value.domain : "";
+  return {
+    ref: firstNonEmpty(
+      value.domainRef,
+      value.domain_ref,
+      domain.ref,
+      config.webphone?.defaultDomainRef
+    ),
+    uri: firstNonEmpty(
+      value.domainUri,
+      value.domain_uri,
+      domain.domainUri,
+      domain.domain_uri,
+      domainString,
+      config.webphone?.defaultDomainUri
+    )
+  };
+}
+
+async function resolveDomainRefForAgentPayload(sdk, payload = {}) {
+  const explicitRef = firstNonEmpty(
+    payload.domainRef,
+    payload.domain_ref,
+    config.webphone?.defaultDomainRef
+  );
+  if (explicitRef) return explicitRef;
+
+  const domainUri = firstNonEmpty(
+    payload.domainUri,
+    payload.domain_uri,
+    payload.domain,
+    sipAorDomain(payload.agent_aor || payload.agentAor || payload.aor),
+    config.webphone?.defaultDomainUri
+  );
+  if (!domainUri) return "";
+
+  const domains = responseItems(await sdk.domains.listDomains({ pageSize: 100 }));
+  const normalized = domainUri.toLowerCase();
+  const match = domains.find((domain) => {
+    const domainName = String(domain.name || "").toLowerCase();
+    const uri = String(domain.domainUri || domain.domain_uri || "").toLowerCase();
+    return uri === normalized || domainName === normalized;
+  });
+
+  if (!match?.ref) {
+    throw new Error(`Fonoster domain not found for ${domainUri}`);
+  }
+
+  return match.ref;
+}
+
+async function normalizeAgentMutationPayload(sdk, body = {}, agentRef = "") {
+  const payload = normalizeBody(body, {
+    domainRef: ["domain_ref"],
+    domainUri: ["domain_uri", "domain"],
+    credentialsRef: ["credentials_ref"],
+    maxContacts: ["max_contacts"]
+  });
+  const domainRef = await resolveDomainRefForAgentPayload(sdk, payload);
+
+  return compactBridgeObject({
+    ref: agentRef || payload.ref,
+    name: payload.name,
+    username: payload.username,
+    domainRef,
+    credentialsRef: payload.credentialsRef,
+    enabled: payload.enabled,
+    maxContacts: payload.maxContacts,
+    privacy: payload.privacy,
+    metadata: payload.metadata
+  });
+}
+
+function buildAgentWebphoneTokenResponse(agent = {}) {
+  const domain = domainIdentity(agent);
+  if (!domain.ref || !domain.uri) {
+    throw new Error(`Fonoster agent ${agent.ref || ""} is missing domainRef/domainUri`);
+  }
+
+  const username = firstNonEmpty(agent.username, sipAorUser(agent.aor), sipAorUser(agent.agent_aor));
+  if (!username) {
+    throw new Error(`Fonoster agent ${agent.ref || ""} is missing username`);
+  }
+
+  const targetAor = `sip:${username}@${domain.uri}`;
+  const claims = compactBridgeObject({
+    ref: agent.ref,
+    domain: domain.uri,
+    domainRef: domain.ref,
+    displayName: firstNonEmpty(agent.name, agent.displayName, username),
+    signalingServer: config.webphone?.signalingServer,
+    targetAor,
+    username,
+    accessKeyId: config.fonoster.accessKeyId,
+    aor: targetAor,
+    aorLink: targetAor,
+    maxContacts: Number(agent.maxContacts || agent.max_contacts || 1) || 1,
+    privacy: firstNonEmpty(agent.privacy, "NONE"),
+    allowedMethods: ["REGISTER", "INVITE"]
+  });
+  const token = jwt.sign(claims, readWebphoneIdentityPrivateKey(), {
+    algorithm: "RS256",
+    expiresIn: Number(config.webphone?.tokenExpiresInSeconds || 3600) || 3600
+  });
+
+  return {
+    token,
+    domain: claims.domain,
+    domainRef: claims.domainRef,
+    displayName: claims.displayName,
+    signalingServer: claims.signalingServer,
+    targetAor: claims.targetAor,
+    username: claims.username,
+    accessKeyId: claims.accessKeyId,
+    aor: claims.aor,
+    aorLink: claims.aorLink,
+    maxContacts: claims.maxContacts,
+    privacy: claims.privacy,
+    allowedMethods: claims.allowedMethods,
+    tokenExpiresIn: Number(config.webphone?.tokenExpiresInSeconds || 3600) || 3600
+  };
+}
+
+function isFonosterNotFound(error) {
+  return error?.code === 5 || String(error?.message || "").includes("NOT_FOUND");
+}
+
+async function buildWebphoneTokenResponseFromPayload(sdk, payload = {}, context = {}) {
+  if (payload.agentRef) {
+    try {
+      const agent = await sdk.agents.getAgent(payload.agentRef);
+      return buildAgentWebphoneTokenResponse(agent);
+    } catch (error) {
+      if (!isFonosterNotFound(error)) throw error;
+
+      logger.warn("fonoster agent not found for webphone token; falling back to AOR identity", {
+        requestId: context.requestId,
+        accountId: context.accountId,
+        agentRef: payload.agentRef,
+        agentAor: payload.agentAor || payload.targetAor || null
+      });
+    }
+  }
+
+  const fallbackAgent = await buildFallbackWebphoneAgent(sdk, payload);
+  return buildAgentWebphoneTokenResponse(fallbackAgent);
+}
+
+async function buildFallbackWebphoneAgent(sdk, payload = {}) {
+  const agentAor = firstNonEmpty(payload.agentAor, payload.targetAor, payload.aor);
+  const username = firstNonEmpty(payload.username, sipAorUser(agentAor));
+  const domainUri = firstNonEmpty(
+    payload.domainUri,
+    payload.domain_uri,
+    typeof payload.domain === "string" ? payload.domain : "",
+    sipAorDomain(agentAor),
+    config.webphone?.defaultDomainUri
+  );
+
+  if (!username || !domainUri) {
+    throw new Error("Webphone token requires a Fonoster agent or SIP AOR identity");
+  }
+
+  const domainRef = firstNonEmpty(
+    payload.domainRef,
+    payload.domain_ref,
+    config.webphone?.defaultDomainRef
+  ) || await resolveDomainRefForAgentPayload(sdk, {
+    domainUri,
+    agentAor
+  });
+
+  return compactBridgeObject({
+    ref: firstNonEmpty(payload.agentRef, username),
+    username,
+    name: firstNonEmpty(payload.displayName, payload.display_name, payload.name, username),
+    domainRef,
+    domainUri,
+    maxContacts: payload.maxContacts || payload.max_contacts || 1,
+    privacy: firstNonEmpty(payload.privacy, "NONE"),
+    aor: agentAor || `sip:${username}@${domainUri}`
+  });
 }
 
 const ONELINK_DIAL_STATUS_MAP = {
@@ -2548,9 +2769,17 @@ function isSipuniOutboundNumberRef(payload = {}, metadata = {}) {
   const numberRef = resolveSipuniAsteriskNumberRef(payload, metadata);
   return Boolean(
     numberRef &&
-      Array.isArray(config.asterisk?.sipuniOutboundNumberRefs) &&
-      config.asterisk.sipuniOutboundNumberRefs.includes(numberRef)
+      (
+        Array.isArray(config.asterisk?.sipuniOutboundNumberRefs) &&
+          config.asterisk.sipuniOutboundNumberRefs.includes(numberRef) ||
+        sipuniGateway.hasGateway(numberRef)
+      )
   );
+}
+
+function sipuniOutboundGateway(payload = {}, metadata = {}) {
+  const numberRef = resolveSipuniAsteriskNumberRef(payload, metadata);
+  return sipuniGateway.gatewayByNumberRef(numberRef);
 }
 
 function optInFlagEnabled(...values) {
@@ -2590,10 +2819,19 @@ function operatorFirstOutboundEnabled(metadata = {}) {
   return explicitAllow !== false;
 }
 
+function sipuniLocalAsteriskOperatorFirstEnabled(metadata = {}) {
+  return optInFlagEnabled(
+    metadata.sipuni_local_asterisk_operator_first,
+    metadata.sipuniLocalAsteriskOperatorFirst,
+    process.env.TELEPHONY_BRIDGE_SIPUNI_LOCAL_ASTERISK_OPERATOR_FIRST_ENABLED
+  );
+}
+
 function sipuniProviderFirstMetadata(payload = {}, metadata = {}) {
   if (!isSipuniOutboundNumberRef(payload, metadata)) return {};
 
   const numberRef = resolveSipuniAsteriskNumberRef(payload, metadata);
+  const gateway = sipuniOutboundGateway(payload, metadata);
   return {
     source: "sipuni_provider_first_outbound",
     provider_path: "fonoster_sipuni_provider_first",
@@ -2601,10 +2839,14 @@ function sipuniProviderFirstMetadata(payload = {}, metadata = {}) {
     sipuni_internal_outbound: true,
     sipuni_original_number_ref: numberRef,
     sipuniOriginalNumberRef: numberRef,
-    sipuni_ingress_number: config.asterisk?.sipuniOutboundIngressNumber || "",
-    sipuniIngressNumber: config.asterisk?.sipuniOutboundIngressNumber || "",
-    sipuni_internal_number: config.asterisk?.sipuniOutboundCallerId || "",
-    sipuniInternalNumber: config.asterisk?.sipuniOutboundCallerId || ""
+    sipuni_gateway_ref: gateway?.gatewayRef || gateway?.ref || "",
+    sipuniGatewayRef: gateway?.gatewayRef || gateway?.ref || "",
+    sipuni_endpoint_name: gateway?.endpointName || config.asterisk?.sipuniOutboundEndpoint || "",
+    sipuniEndpointName: gateway?.endpointName || config.asterisk?.sipuniOutboundEndpoint || "",
+    sipuni_ingress_number: gateway?.ingressNumber || config.asterisk?.sipuniOutboundIngressNumber || "",
+    sipuniIngressNumber: gateway?.ingressNumber || config.asterisk?.sipuniOutboundIngressNumber || "",
+    sipuni_internal_number: gateway?.callerId || config.asterisk?.sipuniOutboundCallerId || "",
+    sipuniInternalNumber: gateway?.callerId || config.asterisk?.sipuniOutboundCallerId || ""
   };
 }
 
@@ -2616,9 +2858,10 @@ function sipuniRuntimeNumberRef(metadata = {}) {
   );
 }
 
-function sipuniOutboundDialDestination(payload = {}) {
+function sipuniOutboundDialDestination(payload = {}, metadata = {}) {
   const destination = normalizeSipuniOutboundDestination(payload.to);
-  const endpointName = config.asterisk?.sipuniOutboundEndpoint || "";
+  const gateway = sipuniOutboundGateway(payload, metadata);
+  const endpointName = gateway?.endpointName || config.asterisk?.sipuniOutboundEndpoint || "";
   if (!destination || !endpointName) return "";
 
   return `PJSIP/${destination}@${endpointName}`;
@@ -2627,13 +2870,21 @@ function sipuniOutboundDialDestination(payload = {}) {
 function sipuniRuntimeOutboundPayload(payload = {}, metadata = {}) {
   const sourceNumberRef = resolveSipuniAsteriskNumberRef(payload, metadata);
   const runtimeNumberRef = sipuniRuntimeNumberRef(metadata);
-  const dialDestination = sipuniOutboundDialDestination(payload);
+  if (!runtimeNumberRef) {
+    throw new Error("sipuni outbound runtime number ref is required");
+  }
+
+  const gateway = sipuniOutboundGateway(payload, metadata);
+  const dialDestination = sipuniOutboundDialDestination(payload, metadata);
 
   return {
     ...payload,
     from: undefined,
-    fromNumberRef: undefined,
-    from_number_ref: undefined,
+    // Runtime/operator-first calls must originate from the Fonoster runtime
+    // number. Keeping this only in metadata makes resolveFromNumber() return
+    // null and the bridge fails with HTTP 400 before creating the call.
+    fromNumberRef: runtimeNumberRef,
+    from_number_ref: runtimeNumberRef,
     metadata: {
       ...metadata,
       source: "sipuni_native_runtime_outbound",
@@ -2656,10 +2907,14 @@ function sipuniRuntimeOutboundPayload(payload = {}, metadata = {}) {
             sipuniOutboundDialDestination: dialDestination
           }
         : {}),
-      sipuni_ingress_number: config.asterisk?.sipuniOutboundIngressNumber || "",
-      sipuniIngressNumber: config.asterisk?.sipuniOutboundIngressNumber || "",
-      sipuni_internal_number: config.asterisk?.sipuniOutboundCallerId || "",
-      sipuniInternalNumber: config.asterisk?.sipuniOutboundCallerId || ""
+      sipuni_ingress_number: gateway?.ingressNumber || config.asterisk?.sipuniOutboundIngressNumber || "",
+      sipuniIngressNumber: gateway?.ingressNumber || config.asterisk?.sipuniOutboundIngressNumber || "",
+      sipuni_internal_number: gateway?.callerId || config.asterisk?.sipuniOutboundCallerId || "",
+      sipuniInternalNumber: gateway?.callerId || config.asterisk?.sipuniOutboundCallerId || "",
+      sipuni_gateway_ref: gateway?.gatewayRef || gateway?.ref || "",
+      sipuniGatewayRef: gateway?.gatewayRef || gateway?.ref || "",
+      sipuni_endpoint_name: gateway?.endpointName || config.asterisk?.sipuniOutboundEndpoint || "",
+      sipuniEndpointName: gateway?.endpointName || config.asterisk?.sipuniOutboundEndpoint || ""
     }
   };
 }
@@ -2671,6 +2926,96 @@ function normalizeSipuniOutboundDestination(value) {
     digits = `7${digits.slice(1)}`;
   }
   return digits.length >= 3 ? digits : "";
+}
+
+function sipAorUser(value) {
+  const user = String(value || "")
+    .trim()
+    .replace(/^sip:/i, "")
+    .split("@", 1)[0]
+    .trim();
+  return /^[A-Za-z0-9_.+-]+$/.test(user) ? user : "";
+}
+
+function sipuniOperatorAsteriskEndpoint(operatorAgentAor, endpointName) {
+  const user = sipAorUser(operatorAgentAor);
+  if (!user || !endpointName) return "";
+  return `PJSIP/${user}@${endpointName}`;
+}
+
+function sipAorHost(value) {
+  const normalized = String(value || "").trim().replace(/^sip:/i, "");
+  const host = normalized.split("@")[1] || "";
+  return host.split(";")[0].trim().toLowerCase();
+}
+
+function sipuniProviderManagedOperatorProfile(metadata = {}) {
+  const source = firstNonEmpty(
+    metadata.operator_identity_source,
+    metadata.operatorIdentitySource
+  ).toLowerCase();
+  const availabilityMode = firstNonEmpty(
+    metadata.operator_identity_availability_mode,
+    metadata.operatorIdentityAvailabilityMode,
+    metadata.availability_mode,
+    metadata.availabilityMode
+  ).toLowerCase();
+
+  return source === "sip_profile" && ["external_extension", "provider_extension"].includes(availabilityMode);
+}
+
+function sipuniGatewayForInbound(inbound = {}) {
+  const metadata = plainObject(inbound.metadata);
+  const numberRef = firstNonEmpty(
+    inbound.numberRef,
+    inbound.number_ref,
+    metadata.number_ref,
+    metadata.numberRef
+  );
+  if (!numberRef) return null;
+
+  return sipuniOutboundGateway(
+    { fromNumberRef: numberRef },
+    { ...metadata, number_ref: numberRef, numberRef }
+  );
+}
+
+function rewriteSipuniGatewayOperatorDecision(decision = {}, inbound = {}) {
+  if (!decision || decision.action !== "operator") return decision;
+
+  const gateway = sipuniGatewayForInbound(inbound);
+  const endpointName = gateway?.endpointName || "";
+  if (!endpointName) return decision;
+
+  const target = firstNonEmpty(
+    decision.destination,
+    decision.phoneNumber,
+    decision.phone_number,
+    decision.agentAor,
+    decision.agent_aor
+  );
+  const user = sipAorUser(target);
+  if (!user) return decision;
+
+  const host = sipAorHost(target);
+  const gatewayHost = String(gateway.host || "").trim().toLowerCase();
+  if (host && gatewayHost && host !== gatewayHost) return decision;
+
+  const destination = `PJSIP/${user}@${endpointName}`;
+  return {
+    ...decision,
+    destination,
+    phoneNumber: destination,
+    phone_number: destination,
+    originalAgentAor: decision.agentAor || decision.agent_aor || target,
+    original_agent_aor: decision.agent_aor || decision.agentAor || target,
+    sipuniGatewayOperatorDestination: destination,
+    sipuni_gateway_operator_destination: destination,
+    sipuniGatewayRef: gateway.gatewayRef || gateway.ref || "",
+    sipuni_gateway_ref: gateway.gatewayRef || gateway.ref || "",
+    sipuniEndpointName: endpointName,
+    sipuni_endpoint_name: endpointName
+  };
 }
 
 function normalizeAnalogOutboundDestination(value) {
@@ -2702,7 +3047,7 @@ function isAnalogAsteriskOutbound(payload = {}, metadata = {}) {
 
 function outboundDialDestinationForPayload(payload = {}, metadata = {}) {
   if (isSipuniOutboundNumberRef(payload, metadata)) {
-    return sipuniOutboundDialDestination(payload);
+    return sipuniOutboundDialDestination(payload, metadata);
   }
 
   if (isAnalogAsteriskOutbound(payload, metadata)) {
@@ -2916,25 +3261,35 @@ async function createSipuniAsteriskOutboundCall({
   routingMode,
   accountId,
   requestId,
-  idempotencyKey
+  idempotencyKey,
+  operatorAgentAor,
+  operatorFirstOutbound,
+  outboundDialDestination
 }) {
   const destination = normalizeSipuniOutboundDestination(payload.to);
   if (!destination) {
     throw new Error("to is required");
   }
 
-  const endpointName = config.asterisk?.sipuniOutboundEndpoint || "";
+  const gateway = sipuniOutboundGateway(payload, payloadMetadata);
+  const endpointName = gateway?.endpointName || config.asterisk?.sipuniOutboundEndpoint || "";
   if (!endpointName) {
     throw new Error("Sipuni outbound endpoint is not configured");
   }
 
   const numberRef = resolveSipuniAsteriskNumberRef(payload, payloadMetadata);
   const callRef = randomUUID();
-  const callerId = config.asterisk?.sipuniOutboundCallerId || "207";
+  const callerId = gateway?.callerId || config.asterisk?.sipuniOutboundCallerId || "207";
+  const ingressNumber = gateway?.ingressNumber || config.asterisk?.sipuniOutboundIngressNumber || callerId;
+  const operatorEntryEndpoint = operatorFirstOutbound
+    ? sipuniOperatorAsteriskEndpoint(operatorAgentAor, endpointName)
+    : "";
+  const ariEndpoint = operatorEntryEndpoint || `PJSIP/${destination}@${endpointName}`;
+  const ariIngressNumber = operatorEntryEndpoint ? callerId : ingressNumber;
   const ariBaseUrl = asteriskAriBaseUrl();
 
   const url = new URL(`${ariBaseUrl}/channels`);
-  url.searchParams.set("endpoint", `PJSIP/${destination}@${endpointName}`);
+  url.searchParams.set("endpoint", ariEndpoint);
   url.searchParams.set("app", "mediacontroller");
   url.searchParams.set("callerId", callerId);
   url.searchParams.set("timeout", String(payload.timeout || 60));
@@ -2946,17 +3301,31 @@ async function createSipuniAsteriskOutboundCall({
     provider: "sipuni",
     number_ref: numberRef,
     numberRef,
+    sipuni_gateway_ref: gateway?.gatewayRef || gateway?.ref || "",
+    sipuniGatewayRef: gateway?.gatewayRef || gateway?.ref || "",
     sipuni_endpoint: endpointName,
+    sipuni_endpoint_name: endpointName,
+    sipuniEndpointName: endpointName,
+    sipuni_ingress_number: ingressNumber,
+    sipuniIngressNumber: ingressNumber,
     sipuni_internal_number: callerId,
+    sipuniInternalNumber: callerId,
     destination,
-    original_to: payload.to
+    original_to: payload.to,
+    originalTo: payload.to,
+    outbound_dial_destination: outboundDialDestination || "",
+    outboundDialDestination: outboundDialDestination || "",
+    operator_entry_endpoint: operatorEntryEndpoint || "",
+    operatorEntryEndpoint: operatorEntryEndpoint || "",
+    operator_first_outbound: operatorFirstOutbound === true,
+    operatorFirstOutbound: operatorFirstOutbound === true
   };
 
   const variables = {
     APP_REF: appDecision.appRef || "",
     CALL_REF: callRef,
     CALL_DIRECTION: "outbound",
-    INGRESS_NUMBER: config.asterisk?.sipuniOutboundIngressNumber || "",
+    INGRESS_NUMBER: ariIngressNumber || "",
     ONELINK_ACCOUNT_ID: accountId || "",
     ONELINK_MODE: routingMode || "operator",
     ONELINK_NUMBER_REF: numberRef || "",
@@ -2990,8 +3359,11 @@ async function createSipuniAsteriskOutboundCall({
   logger.info("created Sipuni outbound call via local Asterisk", {
     callRef,
     endpoint: endpointName,
+    ariEndpoint,
+    operatorEntryEndpoint: operatorEntryEndpoint || null,
     destination,
     callerId,
+    ingressNumber: ariIngressNumber || null,
     numberRef,
     requestId,
     accountId,
@@ -4208,13 +4580,10 @@ app.get(
 app.post(
   "/telephony/agents",
   asyncRoute(async (req, res) => {
-    const payload = normalizeBody(req.body, {
-      domainRef: ["domain_ref"],
-      credentialsRef: ["credentials_ref"]
+    const response = await withSdkRetry(async (sdk) => {
+      const payload = await normalizeAgentMutationPayload(sdk, req.body || {});
+      return sdk.agents.createAgent(payload);
     });
-    const response = await withSdkRetry((sdk) =>
-      sdk.agents.createAgent(payload)
-    );
     res.status(201).json(response);
   })
 );
@@ -4232,13 +4601,10 @@ app.get(
 app.put(
   "/telephony/agents/:agentRef",
   asyncRoute(async (req, res) => {
-    const payload = normalizeBody(req.body, {
-      domainRef: ["domain_ref"],
-      credentialsRef: ["credentials_ref"]
+    const response = await withSdkRetry(async (sdk) => {
+      const payload = await normalizeAgentMutationPayload(sdk, req.body || {}, req.params.agentRef);
+      return sdk.agents.updateAgent(payload);
     });
-    const response = await withSdkRetry((sdk) =>
-      sdk.agents.updateAgent({ ...payload, ref: req.params.agentRef })
-    );
     res.json(response);
   })
 );
@@ -4246,13 +4612,10 @@ app.put(
 app.patch(
   "/telephony/agents/:agentRef",
   asyncRoute(async (req, res) => {
-    const payload = normalizeBody(req.body, {
-      domainRef: ["domain_ref"],
-      credentialsRef: ["credentials_ref"]
+    const response = await withSdkRetry(async (sdk) => {
+      const payload = await normalizeAgentMutationPayload(sdk, req.body || {}, req.params.agentRef);
+      return sdk.agents.updateAgent(payload);
     });
-    const response = await withSdkRetry((sdk) =>
-      sdk.agents.updateAgent({ ...payload, ref: req.params.agentRef })
-    );
     res.json(response);
   })
 );
@@ -4301,6 +4664,7 @@ async function buildOutboundCallResponse(req) {
   }
   const payloadMetadata = plainObject(payload.metadata);
   const sipuniRuntimeOutbound = isSipuniAsteriskOutbound(payload, payloadMetadata);
+  const sipuniOutboundGatewayEntry = sipuniOutboundGateway(payload, payloadMetadata);
   const callPayload = sipuniRuntimeOutbound
     ? sipuniRuntimeOutboundPayload(payload, payloadMetadata)
     : payload;
@@ -4366,14 +4730,38 @@ async function buildOutboundCallResponse(req) {
     !sipuniRuntimeOutbound &&
     !operatorFirstOutbound &&
     isSipuniOutboundNumberRef(payload, payloadMetadata);
+  const sipuniDirectAsteriskOutbound = sipuniDirectAsteriskOutboundEnabled(callPayloadMetadata);
+  const sipuniLocalAsteriskOutbound =
+    sipuniRuntimeOutbound &&
+    sipuniDirectAsteriskOutbound;
+  const sipuniLocalAsteriskOperatorFirst =
+    sipuniLocalAsteriskOutbound &&
+    operatorFirstOutbound &&
+    sipuniLocalAsteriskOperatorFirstEnabled(callPayloadMetadata);
+  const sipuniAsteriskOperatorLegOutbound =
+    sipuniRuntimeOutbound &&
+    operatorFirstOutbound &&
+    sipuniProviderManagedOperatorProfile(callPayloadMetadata);
+  // Browser webphone operator-first calls must not be hijacked by the
+  // provider-first local Asterisk path: that path dials the operator extension
+  // through the external Sipuni trunk (for example PJSIP/504@...), so the
+  // browser SIP leg is never connected. Only use local Asterisk for
+  // non-operator calls, explicit local-Asterisk operator-first, or
+  // provider-managed operator extensions.
+  const sipuniAsteriskDirectOutbound =
+    (!operatorFirstOutbound && sipuniLocalAsteriskOutbound) ||
+    sipuniLocalAsteriskOperatorFirst ||
+    sipuniAsteriskOperatorLegOutbound;
   const providerCallTarget = operatorFirstOutbound ? operatorAgentAor : payload.to;
-  const providerPath = sipuniRuntimeOutbound
-    ? "sipuni_native_runtime_outbound"
-    : operatorFirstOutbound
-      ? "fonoster_operator_first"
-      : sipuniProviderFirstOutbound
-        ? "fonoster_sipuni_provider_first"
-        : "fonoster_direct";
+  const providerPath = sipuniAsteriskDirectOutbound
+    ? (sipuniLocalAsteriskOperatorFirst ? "sipuni_local_asterisk_operator_first" : "sipuni_local_asterisk_provider_first")
+    : sipuniRuntimeOutbound
+      ? "sipuni_native_runtime_outbound"
+      : operatorFirstOutbound
+        ? "fonoster_operator_first"
+        : sipuniProviderFirstOutbound
+          ? "fonoster_sipuni_provider_first"
+          : "fonoster_direct";
   const providerFirstMetadata = sipuniProviderFirstMetadata(payload, payloadMetadata);
   const outboundDialDestination = outboundDialDestinationForPayload(payload, callPayloadMetadata);
   const createCallMetadata = operatorFirstOutbound
@@ -4420,31 +4808,50 @@ async function buildOutboundCallResponse(req) {
     to: payload.to,
     providerTo: providerCallTarget,
     outboundDialDestination: outboundDialDestination || null,
+    sipuniEndpointName: sipuniOutboundGatewayEntry?.endpointName || null,
     operatorFirstOutbound,
     sipuniRuntimeOutbound,
     sipuniProviderFirstOutbound,
+    sipuniDirectAsteriskOutbound,
+    sipuniLocalAsteriskOutbound,
+    sipuniLocalAsteriskOperatorFirst,
+    sipuniAsteriskOperatorLegOutbound,
+    sipuniAsteriskDirectOutbound,
     operatorAgentAor: operatorAgentAor || null
   });
 
-  if (sipuniRuntimeOutbound) {
-    from = config.asterisk?.sipuniOutboundCallerId || "207";
+  if (sipuniAsteriskDirectOutbound) {
+    from = sipuniOutboundGatewayEntry?.callerId || config.asterisk?.sipuniOutboundCallerId || "207";
+    created = await createSipuniAsteriskOutboundCall({
+      payload,
+      payloadMetadata,
+      appDecision,
+      outboundMetadata: createCallMetadata,
+      routingMode,
+      accountId,
+      requestId,
+      idempotencyKey,
+      operatorAgentAor,
+      operatorFirstOutbound: sipuniLocalAsteriskOperatorFirst,
+      outboundDialDestination
+    });
   } else {
     from = await withSdkRetry((sdk) => resolveFromNumber(sdk, callPayload));
-  }
 
-  if (!from) {
-    throw new Error("from or from_number_ref is required");
-  }
+    if (!from) {
+      throw new Error("from or from_number_ref is required");
+    }
 
-  created = await withSdkRetry((sdk) =>
-    sdk.createCallWithSafeTracking({
-      from,
-      to: providerCallTarget,
-      appRef: appDecision.appRef || undefined,
-      timeout: payload.timeout || undefined,
-      metadata: createCallMetadata
-    })
-  );
+    created = await withSdkRetry((sdk) =>
+      sdk.createCallWithSafeTracking({
+        from,
+        to: providerCallTarget,
+        appRef: appDecision.appRef || undefined,
+        timeout: payload.timeout || undefined,
+        metadata: createCallMetadata
+      })
+    );
+  }
 
   if (sipuniRuntimeOutbound) {
     logger.info("created Sipuni operator-first outbound runtime call", {
@@ -4910,6 +5317,40 @@ app.post(
   })
 );
 
+app.put(
+  "/telephony/sipuni-gateways/:gatewayRef",
+  asyncRoute(async (req, res) => {
+    const payload = normalizeBody(req.body || {}, {
+      gatewayRef: ["gateway_ref"],
+      numberRef: ["number_ref"],
+      providerAccountNumber: ["provider_account_number"],
+      credentialsRef: ["credentials_ref"],
+      ingressNumber: ["ingress_number"],
+      displayPhoneNumber: ["display_phone_number"],
+      appRef: ["app_ref"],
+      accountId: ["account_id"],
+      inboxId: ["inbox_id"],
+      channelId: ["channel_id"],
+      callerId: ["caller_id"]
+    });
+    const response = await sipuniGateway.upsertSipuniGateway({
+      ...payload,
+      gatewayRef: req.params.gatewayRef,
+      ref: req.params.gatewayRef,
+      numberRef: payload.numberRef || req.params.gatewayRef
+    });
+    res.json(response);
+  })
+);
+
+app.delete(
+  "/telephony/sipuni-gateways/:gatewayRef",
+  asyncRoute(async (req, res) => {
+    const response = await sipuniGateway.deleteSipuniGateway(req.params.gatewayRef);
+    res.json(response);
+  })
+);
+
 app.post(
   "/telephony/ai/toggle",
   asyncRoute(async (req, res) => {
@@ -5016,15 +5457,26 @@ app.post(
 app.post(
   "/telephony/webphone/token",
   asyncRoute(async (req, res) => {
-    const token = await withSdkRetry((sdk) =>
-      sdk.applications.createTestToken()
-    );
+    const payload = normalizeBody(req.body || {}, {
+      agentRef: ["agent_ref"],
+      agentAor: ["agent_aor"],
+      targetAor: ["target_aor"]
+    });
+    const hasOperatorIdentity = Boolean(payload.agentRef || payload.agentAor || payload.targetAor);
+    const token = hasOperatorIdentity
+      ? await withSdkRetry((sdk) =>
+          buildWebphoneTokenResponseFromPayload(sdk, payload, {
+            requestId: req.requestId,
+            accountId: req.accountId || req.get("x-account-id") || null
+          })
+        )
+      : await withSdkRetry((sdk) =>
+          sdk.applications.createTestToken()
+        );
 
     const expectedAor =
-      req.body?.agent_aor ||
-      req.body?.agentAor ||
-      req.body?.target_aor ||
-      req.body?.targetAor ||
+      payload.agentAor ||
+      payload.targetAor ||
       config.defaults.operatorAgentAor ||
       token.targetAor;
 
@@ -5096,7 +5548,8 @@ app.post(
           accountId: req.accountId,
           requestId: req.requestId
         });
-    const decision = outboundRuntimeDecision || await buildInboundDecision({ inbound, chatwootContext });
+    let decision = outboundRuntimeDecision || await buildInboundDecision({ inbound, chatwootContext });
+    decision = outboundRuntimeDecision ? decision : rewriteSipuniGatewayOperatorDecision(decision, inbound);
     const decisionAgentAor = decision.agentAor || decision.agent_aor || "";
     const decisionAppRef = decision.appRef || decision.app_ref || "";
     const selectedAppRef =
