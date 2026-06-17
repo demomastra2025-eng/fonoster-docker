@@ -178,6 +178,7 @@ function normalizeGatewayPayload(input = {}) {
     inboxId: firstNonEmpty(input.inboxId, input.inbox_id, metadata.onelink_inbox_id),
     channelId: firstNonEmpty(input.channelId, input.channel_id, metadata.onelink_channel_id),
     callerId: firstNonEmpty(input.callerId, input.caller_id, config.asterisk?.sipuniOutboundCallerId, "207"),
+    onelinkBaseUrl: firstNonEmpty(input.onelinkBaseUrl, input.onelink_base_url, metadata.onelinkBaseUrl, metadata.onelink_base_url),
     markerId,
     endpointName: `${sectionBase}-endpoint`,
     contextName: `from-sipuni-onelink-${markerId}`,
@@ -340,6 +341,8 @@ function publicGatewayEntry(gateway) {
     inboxId: gateway.inboxId,
     channelId: gateway.channelId,
     callerId: gateway.callerId,
+    onelinkBaseUrl: gateway.onelinkBaseUrl,
+    metadata: gateway.metadata,
     markerId: gateway.markerId,
     updatedAt: new Date().toISOString()
   });

@@ -1531,7 +1531,8 @@ function outboundLifecycleRequestContext(event = {}) {
 function onelinkForwardQueueKey(event = {}, options = {}) {
   const callRef = outboundLifecycleCallRef(event);
   const accountId = String(options.accountId || lifecycleValue(event, "accountId", "account_id") || "");
-  return callRef ? `${accountId}:${callRef}` : `${accountId}:unscoped`;
+  const baseUrl = String(options.baseUrl || "");
+  return callRef ? `${baseUrl}:${accountId}:${callRef}` : `${baseUrl}:${accountId}:unscoped`;
 }
 
 function enqueueOnelinkForward(event, options = {}, logContext = {}) {
@@ -3396,6 +3397,92 @@ async function resolveFromNumber(sdk, body) {
   if (!numberRef) return null;
   const number = await sdk.numbers.getNumber(numberRef);
   return normalizeDialableNumber(number?.telUrl);
+}
+
+function normalizeOnelinkBaseUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  try {
+    const url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    url.hash = "";
+    url.search = "";
+    return url.toString().replace(/\/+$/, "");
+  } catch (_error) {
+    return "";
+  }
+}
+
+function allowedOnelinkBaseUrls() {
+  return new Set([
+    config.onelink.baseUrl,
+    "https://app.one-link.kz",
+    "https://dev.one-link.kz",
+    ...(process.env.TELEPHONY_BRIDGE_ALLOWED_ONELINK_BASE_URLS || "")
+      .split(",")
+      .map((value) => value.trim())
+  ].map(normalizeOnelinkBaseUrl).filter(Boolean));
+}
+
+function allowedOnelinkBaseUrl(value) {
+  const normalized = normalizeOnelinkBaseUrl(value);
+  if (!normalized) return "";
+  return allowedOnelinkBaseUrls().has(normalized) ? normalized : "";
+}
+
+function onelinkBaseUrlFromObject(value = {}) {
+  const attrs = plainObject(value);
+  const metadata = plainObject(attrs.metadata);
+  const data = plainObject(attrs.data);
+  const dataMetadata = plainObject(data.metadata);
+  const routeState = plainObject(attrs.routeState || attrs.route_state);
+  const extended = plainObject(routeState.extended);
+
+  return allowedOnelinkBaseUrl(firstNonEmpty(
+    attrs.onelinkBaseUrl,
+    attrs.onelink_base_url,
+    metadata.onelinkBaseUrl,
+    metadata.onelink_base_url,
+    dataMetadata.onelinkBaseUrl,
+    dataMetadata.onelink_base_url,
+    extended.onelinkBaseUrl,
+    extended.onelink_base_url
+  ));
+}
+
+async function resolveOnelinkBaseUrlForInbound(inbound = {}) {
+  const direct = onelinkBaseUrlFromObject(inbound);
+  if (direct) return direct;
+
+  const metadata = plainObject(inbound.metadata);
+  const numberRef = firstNonEmpty(
+    inbound.numberRef,
+    inbound.number_ref,
+    metadata.numberRef,
+    metadata.number_ref,
+    metadata.onelinkNumberRef,
+    metadata.onelink_number_ref
+  );
+
+  if (numberRef) {
+    const gateway = sipuniGateway.gatewayByNumberRef(numberRef);
+    const gatewayUrl = onelinkBaseUrlFromObject(gateway || {});
+    if (gatewayUrl) return gatewayUrl;
+
+    try {
+      const number = await withSdkRetry((sdk) => sdk.numbers.getNumber(numberRef));
+      const numberUrl = onelinkBaseUrlFromObject(number || {});
+      if (numberUrl) return numberUrl;
+    } catch (error) {
+      logger.debug("could not resolve OneLink base URL from number metadata", {
+        numberRef,
+        message: error.message
+      });
+    }
+  }
+
+  return "";
 }
 
 async function updateNumberRoute(sdk, params) {
@@ -5532,6 +5619,7 @@ app.post(
       accountId: req.accountId || req.body.account_id || req.body.accountId || req.get("x-account-id") || null
     };
 
+    const selectedOnelinkBaseUrl = await resolveOnelinkBaseUrlForInbound(inbound);
     const outboundRuntimeDecision = buildOutboundRuntimeDecision(inbound);
     if (outboundRuntimeDecision) {
       rememberOutboundLifecycleCallRef(inbound.callRef);
@@ -5546,7 +5634,8 @@ app.post(
         }
       : await onelink.lookupInboundContext(inbound, {
           accountId: req.accountId,
-          requestId: req.requestId
+          requestId: req.requestId,
+          baseUrl: selectedOnelinkBaseUrl
         });
     let decision = outboundRuntimeDecision || await buildInboundDecision({ inbound, chatwootContext });
     decision = outboundRuntimeDecision ? decision : rewriteSipuniGatewayOperatorDecision(decision, inbound);
@@ -5588,6 +5677,8 @@ app.post(
       mediaSessionRef: inbound.mediaSessionRef || null,
       accountId: inbound.accountId,
       requestId: req.requestId,
+      onelinkBaseUrl: selectedOnelinkBaseUrl || null,
+      onelink_base_url: selectedOnelinkBaseUrl || null,
       inbound,
       action: decision.action,
       routingMode: decision.action,
@@ -5710,6 +5801,7 @@ app.post(
       eventType: normalized.eventType || "voice_event"
     });
 
+    const selectedOnelinkBaseUrl = await resolveOnelinkBaseUrlForInbound(runtimeEvent);
     const published = await publishVoiceEvent(runtimeEvent);
     rememberLifecycleEventState(runtimeEvent);
 
@@ -5751,7 +5843,8 @@ app.post(
         {
           idempotencyKey,
           accountId,
-          requestId: req.requestId
+          requestId: req.requestId,
+          baseUrl: selectedOnelinkBaseUrl
         },
         {
           message: "failed to forward runtime event to onelink",

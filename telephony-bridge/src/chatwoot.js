@@ -7,26 +7,40 @@ const {
   getCacheStatus
 } = require("./routeCache");
 
-const state = {
-  consecutiveFailures: 0,
-  circuitOpenedUntil: 0
-};
+const stateByBaseUrl = new Map();
 
-function isConfigured() {
-  return Boolean(config.onelink.baseUrl);
+function stateForBaseUrl(baseUrl) {
+  const key = baseUrl || "default";
+  if (!stateByBaseUrl.has(key)) {
+    stateByBaseUrl.set(key, { consecutiveFailures: 0, circuitOpenedUntil: 0 });
+  }
+  return stateByBaseUrl.get(key);
 }
 
-function isCircuitOpen() {
-  return state.circuitOpenedUntil > Date.now();
+function normalizedBaseUrl(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
 }
 
-function openCircuit() {
-  state.circuitOpenedUntil = Date.now() + config.onelink.circuitResetMs;
+function requestBaseUrl(options = {}) {
+  return normalizedBaseUrl(options.baseUrl || options.onelinkBaseUrl || config.onelink.baseUrl);
 }
 
-function resetCircuit() {
-  state.consecutiveFailures = 0;
-  state.circuitOpenedUntil = 0;
+function isConfigured(options = {}) {
+  return Boolean(requestBaseUrl(options));
+}
+
+function isCircuitOpen(options = {}) {
+  return stateForBaseUrl(requestBaseUrl(options)).circuitOpenedUntil > Date.now();
+}
+
+function openCircuit(options = {}) {
+  stateForBaseUrl(requestBaseUrl(options)).circuitOpenedUntil = Date.now() + config.onelink.circuitResetMs;
+}
+
+function resetCircuit(options = {}) {
+  const current = stateForBaseUrl(requestBaseUrl(options));
+  current.consecutiveFailures = 0;
+  current.circuitOpenedUntil = 0;
 }
 
 function buildCompatibilityPayload(payload = {}) {
@@ -163,14 +177,21 @@ function buildRequestHeaders({ accountId, requestId, idempotencyKey } = {}) {
 }
 
 function getStatus() {
+  const defaultState = stateForBaseUrl(requestBaseUrl());
   return {
     configured: isConfigured(),
     circuitOpen: isCircuitOpen(),
     circuitOpenedUntil:
-      state.circuitOpenedUntil > 0
-        ? new Date(state.circuitOpenedUntil).toISOString()
+      defaultState.circuitOpenedUntil > 0
+        ? new Date(defaultState.circuitOpenedUntil).toISOString()
         : null,
-    consecutiveFailures: state.consecutiveFailures,
+    consecutiveFailures: defaultState.consecutiveFailures,
+    circuits: Array.from(stateByBaseUrl.entries()).map(([baseUrl, current]) => ({
+      baseUrl,
+      circuitOpen: current.circuitOpenedUntil > Date.now(),
+      circuitOpenedUntil: current.circuitOpenedUntil > 0 ? new Date(current.circuitOpenedUntil).toISOString() : null,
+      consecutiveFailures: current.consecutiveFailures
+    })),
     cache: getCacheStatus()
   };
 }
@@ -188,6 +209,11 @@ async function requestOnelink(path, body, options = {}) {
     ? Math.max(250, Number(options.timeoutMs))
     : config.onelink.timeoutMs;
 
+  const baseUrl = requestBaseUrl(options);
+  if (!baseUrl) {
+    throw classifyError({ error: new Error("onelink base URL is not configured") });
+  }
+  const currentState = stateForBaseUrl(baseUrl);
   let lastError;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -199,7 +225,7 @@ async function requestOnelink(path, body, options = {}) {
     );
 
     try {
-      const response = await fetch(`${config.onelink.baseUrl}${path}`, {
+      const response = await fetch(`${baseUrl}${path}`, {
         method: "POST",
         headers: buildRequestHeaders({
           accountId: options.accountId,
@@ -217,7 +243,7 @@ async function requestOnelink(path, body, options = {}) {
         throw classifyError({ response, payload });
       }
 
-      resetCircuit();
+      resetCircuit({ baseUrl });
 
       return {
         payload,
@@ -226,7 +252,7 @@ async function requestOnelink(path, body, options = {}) {
     } catch (error) {
       const classified = classifyError({ error });
       lastError = classified;
-      state.consecutiveFailures += 1;
+      currentState.consecutiveFailures += 1;
 
       logger.warn("onelink request failed", {
         path,
@@ -236,7 +262,7 @@ async function requestOnelink(path, body, options = {}) {
       });
 
       if (!classified.retryable || attempt >= maxRetries) {
-        openCircuit();
+        openCircuit({ baseUrl });
         throw classified;
       }
 
@@ -266,7 +292,7 @@ function isTerminalRuntimeEvent(event = {}) {
 }
 
 async function lookupInboundContext(inbound, options = {}) {
-  if (!isConfigured()) {
+  if (!isConfigured(options)) {
     return {
       configured: false,
       source: "not_configured",
@@ -277,7 +303,7 @@ async function lookupInboundContext(inbound, options = {}) {
 
   const cachedDecision = getCachedDecision({ inbound });
 
-  if (isCircuitOpen()) {
+  if (isCircuitOpen(options)) {
     return {
       configured: true,
       degraded: true,
@@ -295,7 +321,8 @@ async function lookupInboundContext(inbound, options = {}) {
       body,
       {
         accountId: options.accountId,
-        requestId: options.requestId
+        requestId: options.requestId,
+        baseUrl: options.baseUrl
       }
     );
 
@@ -340,7 +367,7 @@ async function lookupInboundContext(inbound, options = {}) {
 }
 
 async function forwardInboundEvent(event, options = {}) {
-  if (!isConfigured()) {
+  if (!isConfigured(options)) {
     return {
       forwarded: false,
       skipped: true,
@@ -361,6 +388,7 @@ async function forwardInboundEvent(event, options = {}) {
         "",
       accountId: options.accountId,
       requestId: options.requestId,
+      baseUrl: options.baseUrl,
       maxRetries: terminal ? Math.max(config.onelink.maxRetries, 8) : 0,
       timeoutMs: terminal ? Math.max(config.onelink.timeoutMs, 15000) : config.onelink.timeoutMs
     }
