@@ -1300,6 +1300,19 @@ function forwardOutboundStatusEventToOnelink(event, requestContext = {}) {
 }
 
 async function publishAndForwardOutboundStatusEvent(event, requestContext = {}) {
+  if (staleProviderUnknownTerminalEvent(event)) {
+    const callRef = outboundLifecycleCallRef(event);
+    logger.info("skipped stale provider UNKNOWN terminal after runtime terminal", {
+      callRef,
+      eventType: event.eventType || event.event_type || null,
+      reason: lifecycleValue(event, "reason", "endReason", "end_reason") || null
+    });
+    stopOutboundStatusPollerForCall(callRef);
+    scheduleRuntimeMediaSessionCleanupForCall(callRef, event, "stale_provider_unknown_terminal");
+    stopRuntimeMediaSessionWatchersForCall(callRef);
+    return null;
+  }
+
   const published = await publishVoiceEvent(event);
   rememberLifecycleEventState(event);
   if (staleNonTerminalLifecycleEvent(event)) {
@@ -1311,8 +1324,10 @@ async function publishAndForwardOutboundStatusEvent(event, requestContext = {}) 
     forwardOutboundStatusEventToOnelink(event, requestContext);
   }
   if (outboundLifecycleTerminal(event)) {
-    stopOutboundStatusPollerForCall(outboundLifecycleCallRef(event));
-    stopRuntimeMediaSessionWatchersForCall(outboundLifecycleCallRef(event));
+    const callRef = outboundLifecycleCallRef(event);
+    stopOutboundStatusPollerForCall(callRef);
+    scheduleRuntimeMediaSessionCleanupForCall(callRef, event, "outbound_status_terminal");
+    stopRuntimeMediaSessionWatchersForCall(callRef);
   }
   return published;
 }
@@ -1519,6 +1534,33 @@ function staleNonTerminalLifecycleEvent(event = {}) {
   );
 }
 
+function providerUnknownTerminalLifecycleEvent(event = {}) {
+  const reason = String(
+    lifecycleValue(event, "reason", "endReason", "end_reason") || ""
+  ).trim();
+  const rawStatus = String(
+    lifecycleValue(event, "rawStatus", "raw_status") || ""
+  ).trim().toUpperCase();
+  const terminalSource = String(
+    lifecycleValue(event, "terminalSource", "terminal_source") || ""
+  ).trim();
+
+  return (
+    reason === "provider_unknown_terminal" ||
+    (rawStatus === "UNKNOWN" && terminalSource === "provider_cdr")
+  );
+}
+
+function staleProviderUnknownTerminalEvent(event = {}) {
+  const callRef = outboundLifecycleCallRef(event);
+  return Boolean(
+    callRef &&
+      terminalLifecycleCallRefKnown(callRef) &&
+      outboundLifecycleTerminal(event) &&
+      providerUnknownTerminalLifecycleEvent(event)
+  );
+}
+
 function outboundLifecycleRequestContext(event = {}) {
   return {
     accountId: String(lifecycleValue(event, "accountId", "account_id") || ""),
@@ -1695,12 +1737,107 @@ function stopRuntimeMediaSessionWatchersForCall(callRef) {
   }
 }
 
+function runtimeMediaSessionEntriesForCall(callRef) {
+  if (!callRef) return [];
+
+  return [...activeRuntimeMediaSessionWatchers.values()].filter(
+    (entry) => entry.callRef === callRef && !entry.cleanupStarted
+  );
+}
+
+function sortRuntimeMediaSessionCleanupChannelIds(channelIds, entry) {
+  return [...channelIds]
+    .filter(Boolean)
+    .sort((left, right) => {
+      const leftIsPrimary = left === entry.mediaSessionRef ? 1 : 0;
+      const rightIsPrimary = right === entry.mediaSessionRef ? 1 : 0;
+      return leftIsPrimary - rightIsPrimary;
+    });
+}
+
+async function runtimeMediaSessionChannelIdsForCleanup(entry) {
+  const channelIds = new Set();
+  addAriChannelCandidate(channelIds, entry.mediaSessionRef);
+
+  try {
+    const bridges = await fetchAsteriskAriBridges();
+    for (const bridge of bridges) {
+      const bridgeChannels = Array.isArray(bridge.channels) ? bridge.channels.map(String) : [];
+      if (!bridgeChannels.includes(String(entry.mediaSessionRef))) continue;
+      for (const channelId of bridgeChannels) {
+        addAriChannelCandidate(channelIds, channelId);
+      }
+    }
+  } catch (error) {
+    logger.warn("failed to resolve runtime media session bridge channels", {
+      callRef: entry.callRef,
+      mediaSessionRef: entry.mediaSessionRef,
+      message: error.message
+    });
+  }
+
+  return sortRuntimeMediaSessionCleanupChannelIds(channelIds, entry);
+}
+
+async function cleanupRuntimeMediaSessionChannelsForCall(callRef, entries, event = {}, source = "") {
+  const eventType = runtimeMediaSessionEventType(event) || null;
+  for (const entry of entries) {
+    const channelIds = await runtimeMediaSessionChannelIdsForCleanup(entry);
+    const results = [];
+
+    for (const channelId of channelIds) {
+      try {
+        const result = await hangupAsteriskAriChannel(channelId);
+        results.push({ channelId, found: result.found, status: result.status });
+      } catch (error) {
+        results.push({ channelId, error: error.message });
+        logger.warn("failed to cleanup runtime media session channel", {
+          callRef,
+          mediaSessionRef: entry.mediaSessionRef,
+          channelId,
+          source,
+          eventType,
+          message: error.message
+        });
+      }
+    }
+
+    logger.info("cleaned up runtime media session channels", {
+      callRef,
+      mediaSessionRef: entry.mediaSessionRef,
+      source,
+      eventType,
+      channelCount: channelIds.length,
+      results
+    });
+  }
+}
+
+function scheduleRuntimeMediaSessionCleanupForCall(callRef, event = {}, source = "") {
+  const entries = runtimeMediaSessionEntriesForCall(callRef);
+  if (!entries.length) return;
+
+  for (const entry of entries) {
+    entry.cleanupStarted = true;
+  }
+
+  void cleanupRuntimeMediaSessionChannelsForCall(callRef, entries, event, source).catch((error) => {
+    logger.warn("failed to cleanup runtime media session channels for call", {
+      callRef,
+      source,
+      eventType: runtimeMediaSessionEventType(event) || null,
+      message: error.message
+    });
+  });
+}
+
 function handleRuntimeMediaSessionLifecycle(event = {}, requestContext = {}) {
   const callRef = outboundLifecycleCallRef(event);
   if (!callRef) return;
 
   if (outboundLifecycleTerminal(event)) {
     stopOutboundStatusPollerForCall(callRef);
+    scheduleRuntimeMediaSessionCleanupForCall(callRef, event, "runtime_lifecycle_terminal");
     stopRuntimeMediaSessionWatchersForCall(callRef);
     return;
   }
@@ -2755,6 +2892,96 @@ function plainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function normalizeProviderKindValue(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  if (!normalized) return "";
+  if (normalized.includes("sipuni")) return "sipuni";
+  if (["asterisk", "asterisk_analog", "asteriskanalog", "analog"].includes(normalized)) {
+    return "asterisk_analog";
+  }
+  return normalized;
+}
+
+function runtimeNumberRefFromMap(sourceNumberRef, ...envNames) {
+  const source = firstNonEmpty(sourceNumberRef);
+  if (!source) return "";
+
+  for (const envName of envNames) {
+    const raw = process.env[envName];
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) continue;
+
+    if (trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        const mapped = firstNonEmpty(parsed[source], parsed[source.toLowerCase()]);
+        if (mapped) return mapped;
+      } catch (error) {
+        logger.warn("failed to parse runtime number ref map", {
+          envName,
+          message: error.message
+        });
+      }
+    }
+
+    for (const item of trimmed.split(/[\n,]+/)) {
+      const pair = item.trim();
+      if (!pair) continue;
+      const separatorIndex = pair.includes("=") ? pair.indexOf("=") : pair.indexOf(":");
+      if (separatorIndex <= 0) continue;
+      const key = pair.slice(0, separatorIndex).trim();
+      const value = pair.slice(separatorIndex + 1).trim();
+      if (key === source && value) return value;
+    }
+  }
+
+  return "";
+}
+
+function runtimeNumberRefFromGateway(gateway = {}) {
+  const metadata = plainObject(gateway?.metadata);
+  return firstNonEmpty(
+    gateway?.runtimeNumberRef,
+    gateway?.runtime_number_ref,
+    gateway?.outboundRuntimeNumberRef,
+    gateway?.outbound_runtime_number_ref,
+    metadata.provider_runtime_number_ref,
+    metadata.providerRuntimeNumberRef,
+    metadata.runtime_number_ref,
+    metadata.runtimeNumberRef,
+    metadata.sipuni_outbound_runtime_number_ref,
+    metadata.sipuniOutboundRuntimeNumberRef,
+    metadata.asterisk_analog_outbound_runtime_number_ref,
+    metadata.asteriskAnalogOutboundRuntimeNumberRef
+  );
+}
+
+function providerKindForOutbound(payload = {}, metadata = {}) {
+  const explicit = normalizeProviderKindValue(firstNonEmpty(
+    payload.provider_kind,
+    payload.providerKind,
+    metadata.provider_kind,
+    metadata.providerKind
+  ));
+  if (explicit) return explicit;
+
+  const numberRef = resolveSipuniAsteriskNumberRef(payload, metadata);
+  if (numberRef && sipuniGateway.hasGateway(numberRef)) return "sipuni";
+  if (String(numberRef || "").startsWith("asterisk-analog-")) return "asterisk_analog";
+  return "";
+}
+
+function assertRuntimeNumberRefIsDedicated(providerKind, sourceNumberRef, runtimeNumberRef) {
+  if (!sourceNumberRef || !runtimeNumberRef || sourceNumberRef !== runtimeNumberRef) return;
+
+  throw new Error(
+    `${providerKind} outbound runtime number ref must be a dedicated internal anchor, not the public/source number ref ${sourceNumberRef}`
+  );
+}
+
 function resolveSipuniAsteriskNumberRef(payload = {}, metadata = {}) {
   return firstNonEmpty(
     payload.fromNumberRef,
@@ -2853,10 +3080,23 @@ function sipuniProviderFirstMetadata(payload = {}, metadata = {}) {
   };
 }
 
-function sipuniRuntimeNumberRef(metadata = {}) {
+function sipuniRuntimeNumberRef(payload = {}, metadata = {}) {
+  const sourceNumberRef = resolveSipuniAsteriskNumberRef(payload, metadata);
+  const gateway = sourceNumberRef ? sipuniOutboundGateway(payload, metadata) : null;
+
   return firstNonEmpty(
     metadata.sipuni_outbound_runtime_number_ref,
     metadata.sipuniOutboundRuntimeNumberRef,
+    metadata.provider_runtime_number_ref,
+    metadata.providerRuntimeNumberRef,
+    metadata.runtime_number_ref,
+    metadata.runtimeNumberRef,
+    runtimeNumberRefFromGateway(gateway),
+    runtimeNumberRefFromMap(
+      sourceNumberRef,
+      "TELEPHONY_BRIDGE_SIPUNI_OUTBOUND_RUNTIME_NUMBER_REF_MAP",
+      "TELEPHONY_BRIDGE_PROVIDER_RUNTIME_NUMBER_REF_MAP"
+    ),
     config.asterisk?.sipuniOutboundRuntimeNumberRef
   );
 }
@@ -2872,10 +3112,11 @@ function sipuniOutboundDialDestination(payload = {}, metadata = {}) {
 
 function sipuniRuntimeOutboundPayload(payload = {}, metadata = {}) {
   const sourceNumberRef = resolveSipuniAsteriskNumberRef(payload, metadata);
-  const runtimeNumberRef = sipuniRuntimeNumberRef(metadata);
+  const runtimeNumberRef = sipuniRuntimeNumberRef(payload, metadata);
   if (!runtimeNumberRef) {
     throw new Error("sipuni outbound runtime number ref is required");
   }
+  assertRuntimeNumberRefIsDedicated("sipuni", sourceNumberRef, runtimeNumberRef);
 
   const gateway = sipuniOutboundGateway(payload, metadata);
   const dialDestination = sipuniOutboundDialDestination(payload, metadata);
@@ -2899,7 +3140,9 @@ function sipuniRuntimeOutboundPayload(payload = {}, metadata = {}) {
       ...(runtimeNumberRef
         ? {
             sipuni_runtime_number_ref: runtimeNumberRef,
-            sipuniRuntimeNumberRef: runtimeNumberRef
+            sipuniRuntimeNumberRef: runtimeNumberRef,
+            provider_runtime_number_ref: runtimeNumberRef,
+            providerRuntimeNumberRef: runtimeNumberRef
           }
         : {}),
       ...(dialDestination
@@ -3032,7 +3275,21 @@ function normalizeAnalogOutboundDestination(value) {
 
 function isAnalogAsteriskOutbound(payload = {}, metadata = {}) {
   const numberRef = resolveSipuniAsteriskNumberRef(payload, metadata);
-  const runtimeNumberRef = config.asterisk?.sipuniOutboundRuntimeNumberRef || "";
+  const runtimeNumberRef = firstNonEmpty(
+    metadata.asterisk_analog_outbound_runtime_number_ref,
+    metadata.asteriskAnalogOutboundRuntimeNumberRef,
+    metadata.provider_runtime_number_ref,
+    metadata.providerRuntimeNumberRef,
+    metadata.runtime_number_ref,
+    metadata.runtimeNumberRef,
+    runtimeNumberRefFromMap(
+      numberRef,
+      "TELEPHONY_BRIDGE_ASTERISK_ANALOG_OUTBOUND_RUNTIME_NUMBER_REF_MAP",
+      "TELEPHONY_BRIDGE_PROVIDER_RUNTIME_NUMBER_REF_MAP"
+    ),
+    config.asterisk?.sipuniOutboundRuntimeNumberRef
+  );
+  const providerKind = providerKindForOutbound(payload, metadata);
   const from = firstNonEmpty(
     payload.from,
     payload.from_number,
@@ -3043,7 +3300,8 @@ function isAnalogAsteriskOutbound(payload = {}, metadata = {}) {
   );
 
   return Boolean(
-    (numberRef && runtimeNumberRef && numberRef === runtimeNumberRef) ||
+    providerKind === "asterisk_analog" ||
+      (numberRef && runtimeNumberRef && numberRef === runtimeNumberRef) ||
       from === "9098"
   );
 }
@@ -3097,6 +3355,33 @@ function sipuniAriStatusMaxDurationMs() {
     process.env.TELEPHONY_BRIDGE_SIPUNI_ARI_STATUS_MAX_DURATION_MS || 21600000
   );
   return Number.isFinite(value) && value > 0 ? value : 21600000;
+}
+
+async function fetchAsteriskAriBridges() {
+  const url = `${asteriskAriBaseUrl()}/bridges`;
+  const response = await fetch(url, {
+    headers: {
+      Authorization: asteriskAriAuthHeader()
+    }
+  });
+  const bodyText = await response.text();
+  let body = [];
+  try {
+    body = bodyText ? JSON.parse(bodyText) : [];
+  } catch (_error) {
+    body = { raw: bodyText };
+  }
+
+  if (response.status === 404) {
+    return [];
+  }
+
+  if (!response.ok) {
+    const message = body?.message || body?.error || bodyText || response.statusText;
+    throw new Error(`Asterisk ARI bridge list failed: HTTP ${response.status} ${message}`);
+  }
+
+  return Array.isArray(body) ? body : [];
 }
 
 async function fetchAsteriskAriChannel(callRef) {
@@ -4921,6 +5206,7 @@ async function buildOutboundCallResponse(req) {
     providerTo: providerCallTarget,
     outboundDialDestination: outboundDialDestination || null,
     sipuniEndpointName: sipuniOutboundGatewayEntry?.endpointName || null,
+    runtimeNumberRef: sipuniRuntimeOutbound ? (callPayload.fromNumberRef || callPayload.from_number_ref || null) : null,
     operatorFirstOutbound,
     sipuniRuntimeOutbound,
     sipuniProviderFirstOutbound,
