@@ -2762,7 +2762,9 @@ function resolveSipuniAsteriskNumberRef(payload = {}, metadata = {}) {
     metadata.from_number_ref,
     metadata.fromNumberRef,
     metadata.number_ref,
-    metadata.numberRef
+    metadata.numberRef,
+    metadata.onelink_number_ref,
+    metadata.onelinkNumberRef
   );
 }
 
@@ -4777,6 +4779,21 @@ async function buildOutboundCallResponse(req) {
     (hasOperatorHint ? "operator" : payload.aiEnabled === true ? "ai" : "app");
   const operatorAgentAor = firstNonEmpty(explicitOperatorAgentAor, config.defaults.operatorAgentAor);
   const aiMode = appDecision.aiMode || payload.aiMode || "";
+  const outboundSourceNumberRef = firstNonEmpty(
+    callPayloadMetadata.number_ref,
+    callPayloadMetadata.numberRef,
+    callPayloadMetadata.onelink_number_ref,
+    callPayloadMetadata.onelinkNumberRef,
+    payloadMetadata.number_ref,
+    payloadMetadata.numberRef,
+    payloadMetadata.onelink_number_ref,
+    payloadMetadata.onelinkNumberRef,
+    resolveSipuniAsteriskNumberRef(payload, payloadMetadata),
+    payload.fromNumberRef,
+    payload.from_number_ref,
+    callPayload.fromNumberRef,
+    callPayload.from_number_ref
+  );
   const outboundMetadata = {
     ...(callPayload.metadata || {}),
     ...(payload.targetMetadata ? { target_metadata: payload.targetMetadata } : {}),
@@ -4786,6 +4803,14 @@ async function buildOutboundCallResponse(req) {
     idempotency_key: idempotencyKey,
     direction: "outbound",
     call_direction: "outbound",
+    ...(outboundSourceNumberRef
+      ? {
+          number_ref: outboundSourceNumberRef,
+          numberRef: outboundSourceNumberRef,
+          onelink_number_ref: outboundSourceNumberRef,
+          onelinkNumberRef: outboundSourceNumberRef
+        }
+      : {}),
     mode: routingMode,
     routing_mode: routingMode,
     ...(routingMode === "operator" && operatorAgentAor
