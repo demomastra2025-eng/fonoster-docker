@@ -367,8 +367,8 @@ async function updateRegistry(gateway) {
   const nextEntry = publicGatewayEntry(gateway);
   const next = entries
     .filter((entry) =>
-      entry.numberRef !== gateway.numberRef &&
       entry.gatewayRef !== gateway.gatewayRef &&
+      entry.ref !== gateway.gatewayRef &&
       entry.providerAccountNumber !== gateway.providerAccountNumber
     )
     .concat(nextEntry);
@@ -387,6 +387,16 @@ async function removeRegistryEntry(gatewayRef) {
   );
   await writeRegistryEntries(next);
   return entries.length !== next.length;
+}
+
+function registryEntriesForRef(entries, ref) {
+  return entries.filter((candidate) =>
+    candidate.numberRef === ref ||
+    candidate.gatewayRef === ref ||
+    candidate.ref === ref ||
+    candidate.providerAccountNumber === ref ||
+    candidate.markerId === ref
+  );
 }
 
 function gatewayByNumberRef(numberRef) {
@@ -431,8 +441,21 @@ async function upsertSipuniGateway(rawPayload = {}) {
     throw new Error("Sipuni credentials password is required");
   }
 
-  const pjsipContent = await readText(pjsipConfigPath);
-  const extensionsContent = await readText(extensionsConfigPath);
+  const replacedMarkerIds = (await readRegistryEntries())
+    .filter((entry) =>
+      (entry.gatewayRef === gateway.gatewayRef ||
+        entry.ref === gateway.gatewayRef ||
+        entry.providerAccountNumber === gateway.providerAccountNumber) &&
+      entry.markerId &&
+      entry.markerId !== gateway.markerId
+    )
+    .map((entry) => entry.markerId);
+  let pjsipContent = await readText(pjsipConfigPath);
+  let extensionsContent = await readText(extensionsConfigPath);
+  for (const markerId of Array.from(new Set(replacedMarkerIds))) {
+    pjsipContent = stripManagedBlock(pjsipContent, markerId);
+    extensionsContent = stripManagedBlock(extensionsContent, markerId);
+  }
   await writeTextPreservingMount(
     pjsipConfigPath,
     upsertManagedBlock(pjsipContent, gateway.markerId, pjsipBlockFor(gateway, password))
@@ -448,7 +471,8 @@ async function upsertSipuniGateway(rawPayload = {}) {
     gatewayRef: gateway.gatewayRef,
     numberRef: gateway.numberRef,
     providerAccountNumber: gateway.providerAccountNumber,
-    endpointName: gateway.endpointName
+    endpointName: gateway.endpointName,
+    replacedMarkerIds
   });
 
   return {
@@ -462,32 +486,33 @@ async function upsertSipuniGateway(rawPayload = {}) {
 async function deleteSipuniGateway(gatewayRef) {
   const ref = required(gatewayRef, "gatewayRef");
   const entries = await readRegistryEntries();
-  const entry = entries.find((candidate) =>
-    candidate.numberRef === ref ||
-    candidate.gatewayRef === ref ||
-    candidate.ref === ref ||
-    candidate.providerAccountNumber === ref ||
-    candidate.markerId === ref
-  );
-  const markerId = entry?.markerId || markerIdFor({ gatewayRef: ref, numberRef: ref });
+  const matchedEntries = registryEntriesForRef(entries, ref);
+  const markerIds = Array.from(new Set(
+    (matchedEntries.length ? matchedEntries.map((entry) => entry.markerId) : [markerIdFor({ gatewayRef: ref, numberRef: ref })])
+      .filter(Boolean)
+  ));
 
-  const pjsipContent = await readText(pjsipConfigPath);
-  const extensionsContent = await readText(extensionsConfigPath);
-  await writeTextPreservingMount(pjsipConfigPath, stripManagedBlock(pjsipContent, markerId));
-  await writeTextPreservingMount(extensionsConfigPath, stripManagedBlock(extensionsContent, markerId));
+  let pjsipContent = await readText(pjsipConfigPath);
+  let extensionsContent = await readText(extensionsConfigPath);
+  for (const markerId of markerIds) {
+    pjsipContent = stripManagedBlock(pjsipContent, markerId);
+    extensionsContent = stripManagedBlock(extensionsContent, markerId);
+  }
+  await writeTextPreservingMount(pjsipConfigPath, pjsipContent);
+  await writeTextPreservingMount(extensionsConfigPath, extensionsContent);
   const registryDeleted = await removeRegistryEntry(ref);
   const reload = await reloadAsterisk();
 
   logger.info("deleted Sipuni Asterisk gateway", {
     gatewayRef: ref,
-    markerId,
+    markerIds,
     registryDeleted
   });
 
   return {
     ok: true,
     deleted: ref,
-    markerId,
+    markerIds,
     registryDeleted,
     reload
   };

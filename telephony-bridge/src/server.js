@@ -2862,6 +2862,8 @@ function normalizeInboundEvent(payload = {}) {
     normalizeEventStatusField(normalized, "outcome");
   }
 
+  applyOutboundCompatibilityFields(normalized);
+
   return enrichLifecycleEvent(normalized);
 }
 
@@ -2872,6 +2874,78 @@ function isSsePreferred(req) {
 
 function extractIngressNumber(number) {
   return number?.telUrl ? String(number.telUrl).replace(/^tel:/, "") : "";
+}
+
+function outboundCompatibilityEvent(payload = {}, metadata = {}) {
+  const direction = normalizeCallDirection(
+    firstNonEmpty(
+      payload.call_direction,
+      payload.callDirection,
+      payload.direction,
+      metadata.call_direction,
+      metadata.callDirection,
+      metadata.direction
+    )
+  );
+
+  return (
+    direction === "outbound" ||
+    metadata.operator_first_outbound === true ||
+    metadata.operatorFirstOutbound === true ||
+    String(firstNonEmpty(metadata.operator_first_outbound, metadata.operatorFirstOutbound)).toLowerCase() === "true" ||
+    String(metadata.source || "").includes("outbound")
+  );
+}
+
+function outboundLineIngressNumberForEvent(payload = {}, metadata = {}) {
+  if (!outboundCompatibilityEvent(payload, metadata)) return "";
+
+  return firstNonEmpty(
+    metadata.sipuni_ingress_number,
+    metadata.sipuniIngressNumber,
+    metadata.display_phone_number,
+    metadata.displayPhoneNumber,
+    metadata.phone_number,
+    metadata.phoneNumber,
+    metadata.from_number,
+    metadata.fromNumber
+  );
+}
+
+function applyOutboundCompatibilityFields(normalized = {}) {
+  const metadata = plainObject(normalized.metadata);
+  const numberRef = firstNonEmpty(
+    normalized.numberRef,
+    normalized.number_ref,
+    metadata.number_ref,
+    metadata.numberRef,
+    metadata.onelink_number_ref,
+    metadata.onelinkNumberRef
+  );
+  const inboxId = firstNonEmpty(
+    normalized.inboxId,
+    normalized.inbox_id,
+    metadata.inbox_id,
+    metadata.inboxId,
+    metadata.chatwoot_inbox_id,
+    metadata.chatwootInboxId
+  );
+  const ingressNumber = outboundLineIngressNumberForEvent(normalized, metadata);
+
+  if (numberRef) {
+    normalized.numberRef = numberRef;
+    normalized.number_ref = numberRef;
+  }
+  if (inboxId) {
+    normalized.inboxId = inboxId;
+    normalized.inbox_id = inboxId;
+  }
+  if (ingressNumber) {
+    normalized.ingressNumber = ingressNumber;
+    normalized.ingress_number = ingressNumber;
+  }
+
+  return normalized;
 }
 
 function normalizeDialableNumber(value) {
@@ -5986,6 +6060,12 @@ app.post(
       runtimeCallRef: inbound.runtimeCallRef || null,
       providerCallId: inbound.bridgeCallRef || null,
       mediaSessionRef: inbound.mediaSessionRef || null,
+      numberRef: inbound.numberRef || null,
+      number_ref: inbound.numberRef || null,
+      inboxId: inbound.inboxId || null,
+      inbox_id: inbound.inboxId || null,
+      ingressNumber: outboundLineIngressNumberForEvent(inbound, inboundMetadata) || inbound.ingressNumber || null,
+      ingress_number: outboundLineIngressNumberForEvent(inbound, inboundMetadata) || inbound.ingressNumber || null,
       accountId: inbound.accountId,
       requestId: req.requestId,
       onelinkBaseUrl: selectedOnelinkBaseUrl || null,

@@ -43,10 +43,64 @@ function resetCircuit(options = {}) {
   current.circuitOpenedUntil = 0;
 }
 
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      return value;
+    }
+  }
+  return null;
+}
+
+function normalizedCallDirection(payload = {}, metadata = {}) {
+  return String(
+    firstNonEmpty(
+      payload.call_direction,
+      payload.callDirection,
+      payload.direction,
+      metadata.call_direction,
+      metadata.callDirection,
+      metadata.direction
+    ) || ""
+  ).toLowerCase();
+}
+
+function outboundCompatibilityPayload(payload = {}, metadata = {}) {
+  const direction = normalizedCallDirection(payload, metadata);
+  return (
+    direction === "outbound" ||
+    direction === "to_pstn" ||
+    metadata.operator_first_outbound === true ||
+    metadata.operatorFirstOutbound === true ||
+    String(metadata.operator_first_outbound || metadata.operatorFirstOutbound || "").toLowerCase() === "true" ||
+    String(metadata.source || "").includes("outbound")
+  );
+}
+
+function outboundLineIngressNumber(payload = {}, metadata = {}) {
+  if (!outboundCompatibilityPayload(payload, metadata)) return null;
+
+  return firstNonEmpty(
+    metadata.sipuni_ingress_number,
+    metadata.sipuniIngressNumber,
+    metadata.display_phone_number,
+    metadata.displayPhoneNumber,
+    metadata.phone_number,
+    metadata.phoneNumber,
+    metadata.from_number,
+    metadata.fromNumber
+  );
+}
+
 function buildCompatibilityPayload(payload = {}) {
   const metadata = payload.metadata && typeof payload.metadata === "object"
     ? payload.metadata
     : {};
+  const ingressNumber =
+    outboundLineIngressNumber(payload, metadata) ||
+    payload.ingress_number ||
+    payload.ingressNumber ||
+    null;
   const bridgeCallRef =
     payload.bridge_call_ref ||
     payload.bridgeCallRef ||
@@ -101,8 +155,8 @@ function buildCompatibilityPayload(payload = {}) {
     mediaSessionRef: payload.mediaSessionRef || payload.media_session_ref || null,
     app_ref: payload.app_ref || payload.appRef || null,
     appRef: payload.appRef || payload.app_ref || null,
-    ingress_number: payload.ingress_number || payload.ingressNumber || null,
-    ingressNumber: payload.ingressNumber || payload.ingress_number || null,
+    ingress_number: ingressNumber,
+    ingressNumber,
     caller_number: payload.caller_number || payload.callerNumber || null,
     callerNumber: payload.callerNumber || payload.caller_number || null,
     received_at: payload.received_at || payload.receivedAt || null,
