@@ -1,13 +1,44 @@
 const SDK = require("@fonoster/sdk");
+const jspb = require("google-protobuf");
 const { Struct } = require("google-protobuf/google/protobuf/struct_pb");
 const { makeRpcRequest } = require("@fonoster/sdk/dist/node/client/makeRpcRequest");
 const {
   CreateCallRequest,
   TrackCallRequest
 } = require("@fonoster/sdk/dist/node/generated/node/calls_pb");
+const {
+  CreateTrunkRequest,
+  UpdateTrunkRequest
+} = require("@fonoster/sdk/dist/node/generated/node/trunks_pb");
 const { dialStatusToString } = require("@fonoster/sdk/dist/node/utils");
 const { config } = require("./config");
 const { logger } = require("./logger");
+
+function preserveExplicitFalseBooleanField(MessageType, setterName, fieldNumber) {
+  if (!MessageType || MessageType.__onelinkExplicitFalsePatch) return;
+
+  const originalSerializeBinaryToWriter = MessageType.serializeBinaryToWriter;
+  MessageType.prototype[setterName] = function setExplicitBooleanField(value) {
+    return jspb.Message.setField(this, fieldNumber, Boolean(value));
+  };
+  MessageType.serializeBinaryToWriter = function serializeExplicitBooleanField(message, writer) {
+    originalSerializeBinaryToWriter(message, writer);
+    if (jspb.Message.getField(message, fieldNumber) === false) {
+      writer.writeBool(fieldNumber, false);
+    }
+  };
+  MessageType.__onelinkExplicitFalsePatch = true;
+}
+
+function patchTrunkSendRegisterPresence() {
+  // Fonoster 0.18.x marks send_register as required, but the generated proto3
+  // serializer omits false booleans. Analog Asterisk trunks intentionally use
+  // sendRegister=false (no REGISTER), so preserve explicit false on the wire.
+  preserveExplicitFalseBooleanField(CreateTrunkRequest, "setSendRegister", 2);
+  preserveExplicitFalseBooleanField(UpdateTrunkRequest, "setSendRegister", 3);
+}
+
+patchTrunkSendRegisterPresence();
 
 let cachedClient;
 let loginPromise;
